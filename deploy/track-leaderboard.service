@@ -12,7 +12,7 @@ Wants=network-online.target
 [Service]
 User=USER
 WorkingDirectory=/home/USER/track-leaderboard
-ExecStart=/home/USER/track-leaderboard/.venv/bin/python scraper.py --loop 120
+ExecStart=/home/USER/track-leaderboard/.venv/bin/python scraper.py --loop 120 --browser
 Restart=always
 RestartSec=30
 

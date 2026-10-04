@@ -4,6 +4,7 @@
 Usage:
     python scraper.py --once              # scrape once and exit (use with cron)
     python scraper.py --loop 120          # scrape every 120 seconds until stopped
+    python scraper.py --once --browser    # use a real browser (JavaScript sites, firewalls)
 """
 
 from __future__ import annotations
@@ -178,10 +179,17 @@ def fetch(session: requests.Session, url: str, retries: int = 3) -> str:
     for attempt in range(1, retries + 1):
         try:
             resp = session.get(url, timeout=20)
+            if resp.status_code in (403, 406) or "Mod_Security" in resp.text[:2000]:
+                raise RuntimeError(
+                    f"HTTP {resp.status_code}: the site's firewall blocked the request; "
+                    "try running with --browser"
+                )
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as exc:
-            if attempt == retries:
+            status = exc.response.status_code if exc.response is not None else None
+            # Retrying won't fix a client error (except rate limiting); it only adds load.
+            if attempt == retries or (status and 400 <= status < 500 and status != 429):
                 raise
             log.warning("fetch %s failed (%s), retry %d/%d", url, exc, attempt, retries)
             time.sleep(2 * attempt)
@@ -195,27 +203,143 @@ def save_debug(page_no: int, html: str) -> Path:
     return path
 
 
-def scrape(url: str, max_pages: int, delay: float) -> tuple[list[dict], int]:
-    """Return (entries, pages_scraped). Each entry has page/position/rank/name/score/data."""
-    session = make_session()
-    entries: list[dict] = []
-    visited: set[str] = set()
-    prev_signature = None
-    headers: list[str] | None = None
-    page_no = 1
-    current = url
+class HttpPager:
+    """Fetches pages with plain HTTP requests (fast, but no JavaScript)."""
 
-    while current and page_no <= max_pages and current not in visited:
-        visited.add(current)
-        html = fetch(session, current)
+    def __init__(self):
+        self.session = make_session()
+        self.url = None
+        self.visited: set[str] = set()
+
+    def open(self, url: str) -> str:
+        self.url = url
+        self.visited.add(url)
+        return fetch(self.session, url)
+
+    def next(self, soup: BeautifulSoup, page_no: int) -> str | None:
+        url = next_page_url(soup, self.url, page_no)
+        if not url or url in self.visited:
+            return None
+        return self.open(url)
+
+    def close(self):
+        self.session.close()
+
+
+NEXT_LABEL = re.compile(r"^\s*(next( page)?|›|»|>|→)\s*$", re.I)
+FIRST_ROW_JS = """() => {
+    const r = document.querySelector('table tbody tr') || document.querySelector('table tr:nth-child(2)');
+    return r ? r.innerText : null;
+}"""
+
+
+class BrowserPager:
+    """Drives a real Chromium browser, so JavaScript-rendered pages and
+    click-to-paginate leaderboards work."""
+
+    def __init__(self, headed: bool = False):
+        from playwright.sync_api import sync_playwright
+
+        self._pw = sync_playwright().start()
+        try:
+            self.browser = self._pw.chromium.launch(headless=not headed)
+        except Exception:
+            self._pw.stop()
+            raise
+        self.page = self.browser.new_page()
+        self.status = None
+        self.visited: set[str] = set()
+        self.clicked = False  # paging by clicking Next; a missing/disabled Next then means the end
+
+    def _settle(self):
+        from playwright.sync_api import Error as PWError
+
+        try:
+            self.page.wait_for_selector("table tr td", timeout=20_000)
+            self.page.wait_for_load_state("networkidle", timeout=10_000)
+        except PWError:
+            pass  # no table (yet); the caller reports it
+
+    def open(self, url: str) -> str:
+        self.visited.add(url)
+        resp = self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        self.status = resp.status if resp else None
+        self._settle()
+        html = self.page.content()
+        if "Mod_Security" in html[:2000]:
+            raise RuntimeError(f"HTTP {self.status}: the site's firewall blocked the browser too")
+        return html
+
+    def _next_control(self):
+        candidates = [
+            self.page.locator("a[rel~='next']"),
+            self.page.get_by_role("link", name=NEXT_LABEL),
+            self.page.get_by_role("button", name=NEXT_LABEL),
+        ]
+        for loc in candidates:
+            for i in range(loc.count()):
+                c = loc.nth(i)
+                if not (c.is_visible() and c.is_enabled()):
+                    continue
+                classes = (c.get_attribute("class") or "") + " " + (
+                    c.evaluate("e => e.parentElement ? e.parentElement.className : ''") or "")
+                if c.get_attribute("aria-disabled") == "true" or "disabled" in classes:
+                    continue
+                return c
+        return None
+
+    def next(self, soup: BeautifulSoup, page_no: int) -> str | None:
+        from playwright.sync_api import Error as PWError
+
+        control = self._next_control()
+        if control is None:
+            if self.clicked:
+                return None
+            # No next button/link at all: fall back to ?page=N in the URL.
+            url = next_page_url(soup, self.page.url, page_no)
+            if not url or url in self.visited:
+                return None
+            return self.open(url)
+
+        before = self.page.evaluate(FIRST_ROW_JS)
+        self.clicked = True
+        control.click()
+        try:
+            # Wait until the table shows different rows (works for in-page and full-page navigation).
+            self.page.wait_for_function(
+                "prev => { const r = document.querySelector('table tbody tr') || "
+                "document.querySelector('table tr:nth-child(2)'); return !r || r.innerText !== prev; }",
+                arg=before, timeout=15_000,
+            )
+        except PWError:
+            pass  # unchanged rows are caught by the duplicate-page check
+        self._settle()
+        return self.page.content()
+
+    def close(self):
+        self.browser.close()
+        self._pw.stop()
+
+
+def scrape(pager, url: str, max_pages: int, delay: float) -> tuple[list[dict], int]:
+    """Return (entries, pages_scraped). Each entry has page/position/rank/name/score/data."""
+    entries: list[dict] = []
+    seen: set[str] = set()
+    headers: list[str] | None = None
+    pages = 0
+    html = pager.open(url)
+
+    while html is not None and pages < max_pages:
+        page_no = pages + 1
         soup = BeautifulSoup(html, "html.parser")
         table = find_table(soup, headers)
         if table is None:
             if page_no == 1:
                 path = save_debug(page_no, html)
                 raise RuntimeError(
-                    f"no <table> found on {current}; page saved to {path}. "
-                    "The leaderboard may be rendered by JavaScript or not use a table."
+                    f"no leaderboard <table> found on {url}; page saved to {path}"
+                    + ("" if isinstance(pager, BrowserPager) else
+                       ". If the page is drawn by JavaScript, try --browser")
                 )
             break
 
@@ -223,9 +347,10 @@ def scrape(url: str, max_pages: int, delay: float) -> tuple[list[dict], int]:
         if headers is None:
             headers = page_headers
         signature = hashlib.sha1(json.dumps(records, sort_keys=True).encode()).hexdigest()
-        if not records or signature == prev_signature:
-            break  # empty page or the site returned the same page again: we're past the end
-        prev_signature = signature
+        if not records or signature in seen:
+            break  # empty page, or the site served a page we already have: we're past the end
+        seen.add(signature)
+        pages = page_no
 
         for rec in records:
             entries.append({
@@ -236,14 +361,13 @@ def scrape(url: str, max_pages: int, delay: float) -> tuple[list[dict], int]:
                 "score": to_number(pick(rec, SCORE_KEYS)),
                 "data": rec,
             })
-        log.debug("page %d: %d rows (%s)", page_no, len(records), current)
+        log.debug("page %d: %d rows", page_no, len(records))
 
-        current = next_page_url(soup, current, page_no)
-        page_no += 1
         if delay:
             time.sleep(delay)
+        html = pager.next(soup, page_no)
 
-    return entries, page_no - 1
+    return entries, pages
 
 
 # --------------------------------------------------------------------------- storage
@@ -281,8 +405,10 @@ def store(conn: sqlite3.Connection, scraped_at: str, entries: list[dict], pages:
 def run_once(args) -> bool:
     scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     conn = connect(args.db)
+    pager = None
     try:
-        entries, pages = scrape(args.url, args.max_pages, args.page_delay)
+        pager = BrowserPager(headed=args.headed) if args.browser else HttpPager()
+        entries, pages = scrape(pager, args.url, args.max_pages, args.page_delay)
         if not entries:
             raise RuntimeError("scrape returned no rows")
         sid = store(conn, scraped_at, entries, pages)
@@ -293,6 +419,8 @@ def run_once(args) -> bool:
         log.error("scrape failed: %s", exc)
         return False
     finally:
+        if pager is not None:
+            pager.close()
         conn.close()
 
 
@@ -305,6 +433,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--db", type=Path, default=DEFAULT_DB)
     p.add_argument("--max-pages", type=int, default=200, help="safety limit on pages per run")
     p.add_argument("--page-delay", type=float, default=0.5, help="seconds between page requests")
+    p.add_argument("--browser", action="store_true",
+                   help="use a real Chromium browser (needed if the site blocks plain requests "
+                        "or draws the leaderboard with JavaScript)")
+    p.add_argument("--headed", action="store_true", help="with --browser: show the browser window")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
 

@@ -16,26 +16,34 @@ Quick version, if you already have Python 3.9+ and Git:
 git clone https://github.com/leeablett/track-leaderboard
 cd track-leaderboard
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt     # Windows: .venv\Scripts\pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m playwright install chromium
 mkdir -p logs
-.venv/bin/python scraper.py --once -v         # test run
-.venv/bin/python scraper.py --loop 120        # every 2 minutes
+.venv/bin/python scraper.py --once --browser -v     # test run
+.venv/bin/python scraper.py --loop 120 --browser    # every 2 minutes
 ```
 
-If it prints `no <table> found`, the page HTML is saved to `data/debug/page_1.html`.
+On Windows use `.venv\Scripts\python` in place of `.venv/bin/python` (and `.venv\Scripts\python -m pip` for pip).
+
+**Why `--browser`:** the site's firewall (Mod_Security) rejects plain HTTP clients with
+`406 Not Acceptable`, and the leaderboard may be drawn with JavaScript. `--browser` drives a
+real headless Chromium via Playwright, follows the Next button/links across pages, and stops
+when Next is disabled or a page repeats. Add `--headed` to watch it work.
+
+If it prints `no leaderboard <table> found`, the page HTML is saved to `data/debug/page_1.html`.
 Send that file over and the parser can be adjusted.
 
 ## Running every 2 minutes
 
 | Option | How | Best for |
 |---|---|---|
-| Built-in loop | `scraper.py --loop 120` | Quick start, any OS (keep the window open) |
+| Built-in loop | `scraper.py --loop 120 --browser` | Quick start, any OS (keep the window open) |
 | cron | [`deploy/crontab.example`](deploy/crontab.example) | Linux / macOS / Raspberry Pi |
 | systemd | [`deploy/track-leaderboard.service`](deploy/track-leaderboard.service) | Linux servers: starts on boot, restarts on failure |
 | Task Scheduler | See [SETUP.md](SETUP.md#step-7-run-it-every-2-minutes) | Windows |
 
 Options: `--url`, `--db PATH`, `--max-pages` (safety cap, default 200),
-`--page-delay` (seconds between page requests, default 0.5), `-v` for debug logs.
+`--page-delay` (seconds between page requests, default 0.5), `--browser`, `--headed`, `-v` for debug logs.
 
 ## Storage
 

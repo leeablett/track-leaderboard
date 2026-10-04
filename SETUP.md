@@ -10,6 +10,10 @@ Follow **only the section for your computer**:
 It takes about 10 minutes. Each step ends with **✅ You should see**. If you don't
 see it, stop and check [Problems](#problems) before you carry on.
 
+> **Why `--browser`?** The leaderboard site blocks simple scripts (you'd see a
+> *Mod_Security* / *Not Acceptable* error), so the scraper opens the page in a real
+> Chrome browser in the background, just like you would.
+
 ---
 
 ## Windows
@@ -57,15 +61,21 @@ The scraper is now in `C:\Users\<your name>\track-leaderboard`.
 
 ```
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m playwright install chromium
 ```
 
-✅ **You should see** `Successfully installed ... requests ... beautifulsoup4 ...` at the end.
+The `playwright install` line downloads the browser the scraper uses (about 150 MB).
+
+✅ **You should see** `Successfully installed ... playwright ...` and then the Chromium download finishing.
+
+> **Always type `.venv\Scripts\python`** (with backslashes) on Windows, not `python` on its own
+> and not `.venv/bin/python`. That's the copy of Python with the scraper's libraries installed.
 
 ### Step 6: Do a test run
 
 ```
-.venv\Scripts\python scraper.py --once
+.venv\Scripts\python scraper.py --once --browser
 ```
 
 ✅ **You should see** a line like:
@@ -82,7 +92,7 @@ go to [Problems](#problems).
 **Option A: Easy (runs while the window is open)**
 
 ```
-.venv\Scripts\python scraper.py --loop 120
+.venv\Scripts\python scraper.py --loop 120 --browser
 ```
 
 Leave the window open. Closing it or shutting down the PC stops the scraper.
@@ -96,7 +106,7 @@ Leave the window open. Closing it or shutting down the PC stops the scraper.
 5. **Action:** choose **Start a program**, then click **Next**.
 6. Fill in the three boxes. Replace `YOURNAME` with your Windows user name:
    - **Program/script:** `C:\Users\YOURNAME\track-leaderboard\.venv\Scripts\pythonw.exe`
-   - **Add arguments:** `scraper.py --loop 120`
+   - **Add arguments:** `scraper.py --loop 120 --browser`
    - **Start in:** `C:\Users\YOURNAME\track-leaderboard`
 7. Click **Next**, tick **Open the Properties dialog…**, then click **Finish**.
 8. In Properties, open the **Settings** tab and **untick** *Stop the task if it runs longer than…*. Click **OK**.
@@ -171,15 +181,19 @@ cd track-leaderboard
 ```
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m playwright install --with-deps chromium
 mkdir -p logs
 ```
 
-✅ **You should see** `Successfully installed ... requests ... beautifulsoup4 ...`
+The `playwright install` line downloads the browser the scraper uses (about 150 MB). On Linux it may ask
+for your password to install the browser's system libraries. On a Mac, drop `--with-deps`.
+
+✅ **You should see** `Successfully installed ... playwright ...` and then the Chromium download finishing.
 
 ### Step 5: Do a test run
 
 ```
-.venv/bin/python scraper.py --once
+.venv/bin/python scraper.py --once --browser
 ```
 
 ✅ **You should see** a line like:
@@ -195,7 +209,7 @@ Check that the number of pages matches what the website shows.
 **Option A: Easy (runs while the terminal is open)**
 
 ```
-.venv/bin/python scraper.py --loop 120
+.venv/bin/python scraper.py --loop 120 --browser
 ```
 
 **Option B: Automatic with cron (Mac or Linux)**
@@ -205,7 +219,7 @@ Check that the number of pages matches what the website shows.
    (run `whoami` if you're not sure):
 
    ```
-   */2 * * * * cd /home/YOURNAME/track-leaderboard && .venv/bin/python scraper.py --once >> logs/scraper.log 2>&1
+   */2 * * * * cd /home/YOURNAME/track-leaderboard && .venv/bin/python scraper.py --once --browser >> logs/scraper.log 2>&1
    ```
 
    On a **Mac**, use `/Users/YOURNAME/...` in place of `/home/YOURNAME/...`.
@@ -247,7 +261,12 @@ later; the `scraped_at` time should have moved on.
 | Typing `python` opens the Microsoft Store (Windows) | Use `py` in place of `python` in Steps 3 and 5, e.g. `py -m venv .venv`. |
 | `'git' is not recognized` / `command not found: git` | Install Git (Step 2), then open a **new** terminal window. |
 | `No module named venv` (Linux) | Run `sudo apt install -y python3-venv`, then repeat the step. |
-| `ERROR scrape failed: no <table> found` | The site's layout isn't what the scraper expects. The page was saved to `data/debug/page_1.html`; send that file over so the scraper can be adjusted. |
+| `.venv/bin/python : The term ... is not recognized` (Windows) | You used the Mac/Linux command. On Windows type `.venv\Scripts\python`. |
+| `No module named 'bs4'` or `No module named 'playwright'` | You ran plain `python`. Use `.venv\Scripts\python` (Windows) or `.venv/bin/python` (Mac/Linux). If it still happens, repeat the install step. |
+| `HTTP 406: the site's firewall blocked the request` | Add `--browser` to the command. |
+| `Executable doesn't exist ... chromium` | Run the `playwright install chromium` line from the install step. |
+| `the site's firewall blocked the browser too` | Try `--browser --headed` (shows the browser window). If it's still blocked, the site doesn't allow automated access; contact the site owner. |
+| `ERROR scrape failed: no leaderboard <table> found` | The site's layout isn't what the scraper expects. The page was saved to `data/debug/page_1.html`; send that file over so the scraper can be adjusted. Add `--headed` to watch what the browser sees. |
 | `from 1 page(s)` but the site has more pages | The scraper couldn't find the next-page link. Note what the address bar shows when you go to page 2 on the website, and send that over. |
 | `ERROR scrape failed: ... ConnectionError` / `Timeout` | Check your internet connection and that the website opens in your browser. Single failures are fine; the next run tries again. |
 
