@@ -110,6 +110,91 @@ One player's rank and score over time:
 python export.py player "Some Name" -o player.csv
 ```
 
+## 7. Look inside the database
+
+All the data is in one file: `data\leaderboard.db`. There are two ways to look at it.
+Both are safe to use while the scraper is running.
+
+### Option A: DB Browser for SQLite (point and click)
+
+1. Download and install **DB Browser for SQLite** from <https://sqlitebrowser.org/dl/>. The standard Windows installer is fine.
+2. Open it, click **Open Database Read Only…** (in the drop-down next to **Open Database**), and choose `D:\github\track-leaderboard\data\leaderboard.db`.
+3. Click the **Browse Data** tab and pick a table or view from the **Table** drop-down:
+   - `latest`: the current leaderboard
+   - `history`: every entry from every run
+   - `snapshots`: one row per run, including failed ones
+4. To run your own questions, use the **Execute SQL** tab: paste any query from Option B (without the `python query.py` part and the outer double quotes) and press **F5**.
+5. To save what you're looking at, use **File → Export → Table(s) as CSV file…**
+
+Opening it **read-only** means you can't change or lock the data by accident while the scraper is writing to it.
+
+### Option B: one-line queries from PowerShell
+
+`query.py` runs a question against the database and prints the answer as a table. Put the
+question in double quotes, and any text inside it in single quotes.
+
+List what's in the database:
+
+```
+python query.py --tables
+```
+
+Top 10 right now:
+
+```
+python query.py "SELECT rank, name, score FROM latest LIMIT 10"
+```
+
+Find a player by part of their name:
+
+```
+python query.py "SELECT rank, name, score FROM latest WHERE name LIKE '%smith%'"
+```
+
+One player's rank and score over time:
+
+```
+python query.py "SELECT scraped_at, rank, score FROM history WHERE name = 'Some Name' ORDER BY scraped_at"
+```
+
+How many runs have been saved, and when the first and last were:
+
+```
+python query.py "SELECT COUNT(*) AS runs, MIN(scraped_at) AS first, MAX(scraped_at) AS last FROM snapshots WHERE status = 'ok'"
+```
+
+Recent failed runs and why:
+
+```
+python query.py "SELECT scraped_at, error FROM snapshots WHERE status = 'error' ORDER BY id DESC LIMIT 10"
+```
+
+Biggest climbers over the last 24 hours:
+
+```
+python query.py "SELECT l.name, f.rank AS was, l.rank AS now, f.rank - l.rank AS climbed FROM latest l JOIN history f ON f.name = l.name AND f.snapshot_id = (SELECT MIN(id) FROM snapshots WHERE status = 'ok' AND scraped_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-1 day')) ORDER BY climbed DESC LIMIT 10"
+```
+
+See every column the site shows (the `rank`, `name` and `score` columns are picked out; the rest are kept in `data`):
+
+```
+python query.py "SELECT j.key AS column_name, j.value AS example FROM latest, json_each(latest.data) AS j WHERE latest.position = 1"
+```
+
+Use one of those extra columns, for example `country`. Swap in a name from the list above:
+
+```
+python query.py "SELECT rank, name, json_extract(data, '$.country') AS country FROM latest"
+```
+
+Save any result to a CSV file for Excel by adding `-o` and a file name:
+
+```
+python query.py "SELECT * FROM history WHERE name = 'Some Name'" -o some-name.csv
+```
+
+Times in `scraped_at` are UTC (UK winter time; one hour behind UK summer time).
+
 ## Updating the scraper
 
 ```
@@ -148,7 +233,9 @@ python -m pip install -r requirements.txt
 
 ## How the data is stored
 
-One SQLite file, `data\leaderboard.db`. Open it with [DB Browser for SQLite](https://sqlitebrowser.org/), or use the export commands above.
+One SQLite file, `data\leaderboard.db`. See [Look inside the database](#7-look-inside-the-database) for how to open it.
+
+Two handy **views** are built on top of the tables: `latest` (the most recent successful run) and `history` (every successful run). `query.py` creates them the first time you run it.
 
 **`snapshots`**: one row per scrape run
 
