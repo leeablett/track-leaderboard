@@ -395,13 +395,46 @@ python dashboard.py --port 8051
 
 ## Updating the scraper
 
-```
-git pull
-```
+Do this whenever there's a new version. Your collected data (`data\leaderboard.db`) is
+never touched by an update.
 
-```
-python -m pip install -r requirements.txt
-```
+1. If the scraper or dashboard is running, stop it first (press **Ctrl+C** in its window,
+   or run `python dashboard.py --stop` for a background dashboard).
+2. Go to your scraper folder (use your own path):
+
+   ```
+   cd D:\github\track-leaderboard
+   ```
+
+3. Download the latest version:
+
+   ```
+   git pull
+   ```
+
+   ✅ You should see a list of changed files, or `Already up to date.`
+4. Install any new libraries:
+
+   ```
+   python -m pip install -r requirements.txt
+   ```
+
+5. Check it still works:
+
+   ```
+   python scraper.py --once --browser -v
+   ```
+
+6. Start the scraper and dashboard again as usual.
+
+### If the update fails
+
+| What you see | What to do |
+|---|---|
+| `fatal: not a git repository` | The folder was downloaded as a ZIP, not with `git clone`, so it can't update itself. Download it again with git (step 2 at the top), then copy your old `data` folder into the new folder to keep your history. |
+| `Your local changes ... would be overwritten by merge` | A file in the folder was edited. Put your edits aside with `git stash`, then run `git pull` again. |
+| `Please commit your changes or stash them` | Same as above: `git stash`, then `git pull`. |
+| `'git' is not recognized` | Install Git (step 1 at the top), then open a new PowerShell window. |
 
 ## Options
 
