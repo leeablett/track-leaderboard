@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Leaderboard Tracker</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4;
+  --up: #2a78d6; --down: #e34948; --wash: rgba(42,120,214,0.08);
+  --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; --good-text: #006300;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+    --up: #3987e5; --down: #e66767; --wash: rgba(57,135,229,0.12);
+    --good-text: #0ca30c;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19;
+  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+  --up: #3987e5; --down: #e66767; --wash: rgba(57,135,229,0.12);
+  --good-text: #0ca30c;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 40px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin-bottom: 14px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0; }
+.sub { color: var(--ink-2); font-size: 13px; }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 16px; }
+.filters .label { color: var(--ink-2); font-size: 13px; margin-right: 4px; }
+.seg { display: inline-flex; border: 1px solid var(--ring); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg button {
+  border: 0; background: transparent; color: var(--ink-2); font: inherit; font-size: 13px;
+  padding: 6px 12px; cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--ring); }
+.seg button:hover { background: var(--wash); }
+.seg button[aria-pressed="true"] { color: var(--ink); font-weight: 600; background: var(--wash); }
+.refresh { margin-left: auto; color: var(--muted); font-size: 12px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; transition: opacity .2s; }
+.grid.loading { opacity: .6; }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 16px 18px; min-width: 0; }
+.card.full { grid-column: 1 / -1; }
+.card h2 { font-size: 15px; font-weight: 600; margin: 0; }
+.card .desc { color: var(--ink-2); font-size: 13px; margin: 2px 0 14px; }
+.empty-note { color: var(--muted); font-size: 13px; padding: 12px 0; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .refresh { margin-left: 0; width: 100%; } }
+
+/* 1. KPI tiles */
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 900px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.tile { padding: 4px 0; }
+.tile .k { color: var(--ink-2); font-size: 13px; }
+.tile .v { font-size: 28px; font-weight: 600; line-height: 1.2; margin: 2px 0; }
+.tile .d { color: var(--ink-2); font-size: 12.5px; }
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink); }
+.status i { width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center;
+  font-style: normal; font-size: 11px; font-weight: 700; color: #fff; }
+.status.good i { background: var(--good); }
+.status.warning i { background: var(--warning); color: #0b0b0b; }
+.status.critical i { background: var(--critical); }
+
+/* bar rows (movers, gainers) */
+.rows { display: grid; gap: 2px; }
+.row { display: grid; align-items: center; gap: 10px; min-height: 26px; border-radius: 6px; padding: 0 6px; margin: 0 -6px; outline: none; }
+.row:hover, .row:focus-visible { background: var(--wash); }
+.movers .row { grid-template-columns: minmax(70px, 160px) 1fr 116px; }
+.gainers .row { grid-template-columns: minmax(70px, 160px) 1fr 84px; }
+@media (max-width: 520px) { .movers .row { grid-template-columns: 38% 1fr 52px; } .gainers .row { grid-template-columns: 38% 1fr 64px; } .val small { display: none; } }
+.name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.val { font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+.val small { color: var(--muted); font-size: 12px; }
+.track { position: relative; height: 14px; }
+.movers .track::before { content: ""; position: absolute; left: 50%; top: -6px; bottom: -6px; width: 1px; background: var(--axis); }
+.bar { position: absolute; top: 0; height: 14px; }
+.bar.up { left: calc(50% + 1px); background: var(--up); border-radius: 0 4px 4px 0; }
+.bar.down { right: calc(50% + 1px); background: var(--down); border-radius: 4px 0 0 4px; }
+.bar.gain { left: 0; background: var(--s1); border-radius: 0 4px 4px 0; }
+.gainers .track::before { content: ""; position: absolute; left: 0; top: -6px; bottom: -6px; width: 1px; background: var(--axis); }
+.divider { border-top: 1px solid var(--grid); margin: 6px 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--ink-2); margin: -6px 0 10px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.key-rect { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.key-line { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+
+/* race chart */
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart text.end { fill: var(--ink-2); font-size: 12px; }
+details { margin-top: 10px; font-size: 13px; color: var(--ink-2); }
+details summary { cursor: pointer; }
+.tablewrap { max-height: 260px; overflow: auto; margin-top: 8px; }
+
+/* tables */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 600; color: var(--ink-2); font-size: 12px; padding: 4px 8px 6px 0; border-bottom: 1px solid var(--grid); position: sticky; top: 0; background: var(--surface); }
+td { padding: 5px 8px 5px 0; border-bottom: 1px solid var(--grid); }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+td.spark { width: 32%; padding-right: 0; }
+td.spark svg { width: 100%; max-width: 140px; display: block; }
+
+/* churn */
+.churn { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.churn h3 { font-size: 13px; font-weight: 600; margin: 0 0 6px; color: var(--ink-2); }
+.churn ol { list-style: none; margin: 0; padding: 0; }
+.churn li { display: grid; grid-template-columns: 52px 1fr; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--grid); }
+.churn li .n { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+@media (max-width: 520px) { .churn { grid-template-columns: 1fr; } }
+
+/* tooltip */
+#tip { position: fixed; pointer-events: none; z-index: 10; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; font-size: 12.5px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none; max-width: 280px; }
+#tip .t { color: var(--ink-2); margin-bottom: 4px; }
+#tip .r { display: flex; align-items: center; gap: 8px; }
+#tip .r b { min-width: 34px; font-variant-numeric: tabular-nums; }
+#tip .r span { color: var(--ink-2); }
+.notice { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 24px; }
+.notice code { background: var(--wash); padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Leaderboard Tracker</h1>
+    <span class="sub" id="subtitle">Loading…</span>
+  </header>
+  <div class="filters" role="toolbar" aria-label="Time period">
+    <span class="label">Compare over</span>
+    <div class="seg" id="windows">
+      <button data-w="1h">Last hour</button>
+      <button data-w="6h">6 hours</button>
+      <button data-w="24h">24 hours</button>
+      <button data-w="7d">7 days</button>
+      <button data-w="all">All time</button>
+    </div>
+    <span class="refresh" id="refresh"></span>
+  </div>
+  <div id="main"></div>
+</div>
+<div id="tip" role="tooltip"></div>
+
+<script>
+"use strict";
+const REFRESH_MS = 120000;
+const SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5"];
+let state = { window: "24h", data: null };
+
+// ---------- helpers (all text goes in via textContent; names come from the website)
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v;
+    else if (k === "style") el.style.cssText = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null) el.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  return el;
+}
+const NS = "http://www.w3.org/2000/svg";
+function s(tag, attrs) {
+  const el = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+  return el;
+}
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const num = (n, d = 0) => n == null ? "–" : Number(n).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const signed = n => (n > 0 ? "+" : n < 0 ? "−" : "") + num(Math.abs(n));
+const when = iso => new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+function ago(iso) {
+  const sec = (Date.now() - new Date(iso)) / 1000;
+  if (sec < 90) return "just now";
+  if (sec < 3600) return Math.round(sec / 60) + " min ago";
+  if (sec < 86400) return Math.round(sec / 3600) + " hours ago";
+  return Math.round(sec / 86400) + " days ago";
+}
+function card(title, desc, body, full) {
+  return h("section", { class: "card" + (full ? " full" : "") }, h("h2", {}, title), h("p", { class: "desc" }, desc), body);
+}
+
+// ---------- tooltip
+const tip = document.getElementById("tip");
+function showTip(x, y, build) {
+  tip.replaceChildren(...build());
+  tip.style.display = "block";
+  const r = tip.getBoundingClientRect();
+  tip.style.left = Math.min(x + 14, innerWidth - r.width - 8) + "px";
+  tip.style.top = Math.max(8, y - r.height - 10) + "px";
+}
+const hideTip = () => { tip.style.display = "none"; };
+function withTip(el, build) {
+  el.setAttribute("tabindex", "0");
+  el.addEventListener("pointermove", e => showTip(e.clientX, e.clientY, build));
+  el.addEventListener("pointerleave", hideTip);
+  el.addEventListener("focus", () => { const r = el.getBoundingClientRect(); showTip(r.left + r.width / 2, r.top, build); });
+  el.addEventListener("blur", hideTip);
+  return el;
+}
+
+// ---------- widget 1: at a glance
+function kpis(d) {
+  const k = d.kpi;
+  const age = (Date.now() - new Date(k.last_run.at)) / 60000;
+  let st;
+  if (k.last_run.status === "error") st = ["critical", "✕", "Last run failed"];
+  else if (age <= 5) st = ["good", "✓", "Up to date"];
+  else if (age <= 15) st = ["warning", "!", "Delayed"];
+  else st = ["critical", "✕", "Stopped"];
+  const pct = k.runs_24h ? (100 * k.ok_24h / k.runs_24h) : null;
+  const tile = (label, value, ...detail) => h("div", { class: "tile" }, h("div", { class: "k" }, label), h("div", { class: "v" }, value), h("div", { class: "d" }, ...detail));
+  const body = h("div", { class: "kpis" },
+    tile("Players on the board", num(k.players),
+      k.players_change == null ? "" : (k.players_change === 0 ? "no change" : signed(k.players_change)) + " over " + d.window_label),
+    tile("Last update", ago(k.last_ok),
+      h("span", { class: "status " + st[0], title: k.last_run.error || "" }, h("i", { "aria-hidden": "true" }, st[1]), st[2])),
+    tile("Runs in the last 24 hours", num(k.ok_24h) + " / " + num(k.runs_24h),
+      pct == null ? "no runs" : num(pct, 1) + "% successful"),
+    tile("History collected", num(k.snapshots), "snapshots since " + when(k.since)));
+  const desc = k.last_run.status === "error" ? "Latest error: " + (k.last_run.error || "unknown") : "Is the tracker running, and how much data do we have?";
+  return card("At a glance", desc, body, true);
+}
+
+// ---------- widget 2: big movers (diverging bars)
+function movers(d) {
+  const { up, down } = d.movers;
+  if (!d.comparable) return card("Big movers", "Places gained or lost", h("div", { class: "empty-note" }, "Needs at least two snapshots in this period."));
+  if (!up.length && !down.length) return card("Big movers", "Places gained or lost over " + d.window_label, h("div", { class: "empty-note" }, "No rank changes in this period."));
+  const max = Math.max(1, ...up.map(m => m.change), ...down.map(m => -m.change));
+  const row = m => {
+    const pct = 49 * Math.abs(m.change) / max;
+    const dir = m.change > 0 ? "up" : "down";
+    return withTip(h("div", { class: "row", "aria-label": `${m.name}: ${dir} ${Math.abs(m.change)} places, ${m.from} to ${m.to}` },
+      h("span", { class: "name" }, m.name),
+      h("div", { class: "track" }, h("div", { class: "bar " + dir, style: `width:${pct}%` })),
+      h("span", { class: "val" }, (m.change > 0 ? "▲ " : "▼ ") + Math.abs(m.change), " ", h("small", {}, `${m.from}→${m.to}`))),
+      () => [h("div", { class: "t" }, m.name), h("div", { class: "r" }, h("b", {}, signed(m.change)), h("span", {}, `places · rank ${m.from} → ${m.to}`))]);
+  };
+  const body = h("div", { class: "movers" },
+    h("div", { class: "legend" },
+      h("span", {}, h("i", { class: "key-rect", style: "background:var(--up)" }), "Climbed"),
+      h("span", {}, h("i", { class: "key-rect", style: "background:var(--down)" }), "Fell")),
+    h("div", { class: "rows" }, up.map(row), (up.length && down.length) ? h("div", { class: "divider" }) : null, down.map(row)));
+  return card("Big movers", "Biggest rank changes over " + d.window_label + " (rank then → now)", body);
+}
+
+// ---------- widget 3: top-5 race (line chart, rank 1 at top)
+function race(d) {
+  const { times, series } = d.race;
+  const wrap = h("div", { class: "chart" });
+  const legend = h("div", { class: "legend" }, series.map((sr, i) =>
+    h("span", {}, h("i", { class: "key-line", style: `background:var(${SERIES[i]})` }), sr.name)));
+  const rowsT = times.map((t, j) => h("tr", {}, h("td", {}, when(t)), series.map(sr => h("td", { class: "n" }, num(sr.ranks[j])))));
+  const table = h("details", {}, h("summary", {}, "Show as table"),
+    h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Time"), series.map(sr => h("th", { class: "n" }, sr.name)))), h("tbody", {}, rowsT.reverse()))));
+  const c = card("Top 5 race", "Rank over " + d.window_label + " for today's top 5 (rank 1 at the top)", h("div", {}, legend, wrap, table));
+  if (times.length < 2) { wrap.append(h("div", { class: "empty-note" }, "Needs at least two snapshots in this period.")); return c; }
+  requestAnimationFrame(() => drawRace(wrap, times, series));
+  return c;
+}
+function drawRace(wrap, times, series) {
+  const W = Math.max(240, wrap.clientWidth), H = 250, narrow = W < 520;
+  const m = { l: 34, r: narrow ? 40 : 150, t: 10, b: 26 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const ts = times.map(t => +new Date(t));
+  const all = series.flatMap(sr => sr.ranks).filter(v => v != null);
+  let lo = Math.min(...all), hi = Math.max(...all);
+  if (hi - lo < 4) hi = lo + 4;
+  const x = t => m.l + (t - ts[0]) / Math.max(1, ts[ts.length - 1] - ts[0]) * pw;
+  const y = r => m.t + (r - lo) / (hi - lo) * ph;
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": "Rank over time for the current top 5" });
+  // grid + y ticks
+  const step = Math.max(1, Math.ceil((hi - lo) / 5));
+  for (let r = lo; r <= hi; r += step) {
+    svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: y(r), y2: y(r), stroke: css("--grid"), "stroke-width": 1 }));
+    const t = s("text", { x: m.l - 8, y: y(r) + 4, "text-anchor": "end" }); t.textContent = "#" + r; svg.append(t);
+  }
+  // x ticks
+  const span = ts[ts.length - 1] - ts[0];
+  const fmt = span > 2 * 864e5 ? { day: "numeric", month: "short" } : { hour: "2-digit", minute: "2-digit" };
+  const nt = narrow ? 2 : 4;
+  for (let i = 0; i <= nt; i++) {
+    const tv = ts[0] + span * i / nt;
+    const t = s("text", { x: x(tv), y: H - 6, "text-anchor": i === 0 ? "start" : i === nt ? "end" : "middle" });
+    t.textContent = new Date(tv).toLocaleString([], fmt); svg.append(t);
+  }
+  svg.append(s("line", { x1: m.l, x2: m.l + pw, y1: m.t + ph, y2: m.t + ph, stroke: css("--axis"), "stroke-width": 1 }));
+  // lines (break on gaps)
+  const ends = [];
+  series.forEach((sr, i) => {
+    let dpath = "", pen = false;
+    sr.ranks.forEach((r, j) => {
+      if (r == null) { pen = false; return; }
+      dpath += (pen ? "L" : "M") + x(ts[j]).toFixed(1) + "," + y(r).toFixed(1); pen = true;
+    });
+    svg.append(s("path", { d: dpath, fill: "none", stroke: css(SERIES[i]), "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    const lastJ = sr.ranks.map((r, j) => r == null ? -1 : j).filter(j => j >= 0).pop();
+    if (lastJ != null) ends.push({ i, name: sr.name, r: sr.ranks[lastJ], px: x(ts[lastJ]), py: y(sr.ranks[lastJ]) });
+  });
+  // end dots with surface ring, labels with leader lines when nudged apart
+  ends.sort((a, b) => a.py - b.py);
+  let prev = -Infinity;
+  for (const e of ends) { e.ly = Math.max(e.py, prev + 15); prev = e.ly; }
+  const over = prev - (m.t + ph + 4);
+  if (over > 0) ends.forEach(e => e.ly -= over);
+  for (const e of ends) {
+    svg.append(s("circle", { cx: e.px, cy: e.py, r: 4, fill: css(SERIES[e.i]), stroke: css("--surface"), "stroke-width": 2 }));
+    const lx = e.px + 12;
+    if (Math.abs(e.ly - e.py) > 2) svg.append(s("line", { x1: e.px + 5, y1: e.py, x2: lx - 2, y2: e.ly, stroke: css("--axis"), "stroke-width": 1 }));
+    const t = s("text", { x: lx, y: e.ly + 4, class: "end" });
+    t.textContent = narrow ? `#${e.r}` : `#${e.r} ${e.name.length > 18 ? e.name.slice(0, 17) + "…" : e.name}`; svg.append(t);
+  }
+  // crosshair + tooltip
+  const cross = s("line", { y1: m.t, y2: m.t + ph, stroke: css("--muted"), "stroke-width": 1, visibility: "hidden" });
+  svg.append(cross);
+  const hit = s("rect", { x: m.l, y: m.t, width: pw, height: ph, fill: "transparent", tabindex: 0 });
+  svg.append(hit);
+  const nearest = cx => { let best = 0; ts.forEach((t, j) => { if (Math.abs(x(t) - cx) < Math.abs(x(ts[best]) - cx)) best = j; }); return best; };
+  const show = (j, cx, cy) => {
+    cross.setAttribute("x1", x(ts[j])); cross.setAttribute("x2", x(ts[j])); cross.setAttribute("visibility", "visible");
+    showTip(cx, cy, () => [h("div", { class: "t" }, when(times[j])),
+      ...series.map((sr, i) => sr).map((sr, i) => ({ sr, i })).sort((a, b) => (a.sr.ranks[j] ?? 1e9) - (b.sr.ranks[j] ?? 1e9))
+        .map(({ sr, i }) => h("div", { class: "r" }, h("i", { class: "key-line", style: `background:var(${SERIES[i]})` }), h("b", {}, sr.ranks[j] == null ? "–" : "#" + sr.ranks[j]), h("span", {}, sr.name)))]);
+  };
+  hit.addEventListener("pointermove", e => { const b = svg.getBoundingClientRect(); const cx = (e.clientX - b.left) * W / b.width; show(nearest(cx), e.clientX, e.clientY); });
+  hit.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
+  hit.addEventListener("focus", () => { const b = svg.getBoundingClientRect(); show(ts.length - 1, b.right - m.r, b.top + 20); });
+  hit.addEventListener("blur", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
+  wrap.replaceChildren(svg);
+}
+
+// ---------- widget 4: score gains
+function gainers(d) {
+  if (!d.has_score) return card("Biggest score gains", "Points added", h("div", { class: "empty-note" }, "The leaderboard has no score/points column."));
+  if (!d.comparable || !d.gainers.length) return card("Biggest score gains", "Points added over " + d.window_label, h("div", { class: "empty-note" }, "No score gains in this period yet."));
+  const max = Math.max(...d.gainers.map(g => g.gain));
+  const body = h("div", { class: "gainers rows" }, d.gainers.map(g =>
+    withTip(h("div", { class: "row", "aria-label": `${g.name}: plus ${num(g.gain)} points` },
+      h("span", { class: "name" }, g.name),
+      h("div", { class: "track" }, h("div", { class: "bar gain", style: `width:${Math.max(1, 98 * g.gain / max)}%` })),
+      h("span", { class: "val" }, "+" + num(g.gain))),
+      () => [h("div", { class: "t" }, g.name), h("div", { class: "r" }, h("b", {}, "+" + num(g.gain, 1)), h("span", {}, "points")),
+             h("div", { class: "r" }, h("b", {}, num(g.score, 1)), h("span", {}, `total · rank #${g.rank}`))])));
+  return card("Biggest score gains", "Who added the most points over " + d.window_label + " (who's most active)", body);
+}
+
+// ---------- widget 5: most changeable (table + sparklines)
+function spark(vals) {
+  const W = 120, H = 24, pts = vals.map((v, i) => [i, v]).filter(p => p[1] != null);
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, preserveAspectRatio: "none", "aria-hidden": "true" });
+  if (pts.length < 2) return svg;
+  const lo = Math.min(...pts.map(p => p[1])), hi = Math.max(lo + 1, ...pts.map(p => p[1]));
+  const X = i => 2 + i / (vals.length - 1) * (W - 8), Y = v => 3 + (v - lo) / (hi - lo) * (H - 6);
+  svg.append(s("path", { d: pts.map((p, k) => (k ? "L" : "M") + X(p[0]).toFixed(1) + "," + Y(p[1]).toFixed(1)).join(""), fill: "none", stroke: css("--muted"), "stroke-width": 1.5, "stroke-linejoin": "round", "vector-effect": "non-scaling-stroke" }));
+  const last = pts[pts.length - 1];
+  svg.append(s("circle", { cx: X(last[0]), cy: Y(last[1]), r: 3.5, fill: css("--s1"), stroke: css("--surface"), "stroke-width": 1.5, "vector-effect": "non-scaling-stroke" }));
+  return svg;
+}
+function volatile(d) {
+  if (!d.volatile.length) return card("Most changeable", `Biggest rank swings in the top ${d.volatile_pool}`, h("div", { class: "empty-note" }, "No rank changes in this period."));
+  const body = h("div", { class: "tablewrap", style: "max-height:none" }, h("table", {},
+    h("thead", {}, h("tr", {}, h("th", {}, "Player"), h("th", { class: "n" }, "Now"), h("th", { class: "n" }, "Best"), h("th", { class: "n" }, "Worst"), h("th", { title: "Rank over the period; up = climbing" }, "Trend"))),
+    h("tbody", {}, d.volatile.map(v => h("tr", {},
+      h("td", { class: "name" }, v.name), h("td", { class: "n" }, "#" + v.now), h("td", { class: "n" }, "#" + v.best), h("td", { class: "n" }, "#" + v.worst),
+      h("td", { class: "spark" }, spark(v.spark)))))));
+  return card("Most changeable", `Players in the top ${d.volatile_pool} whose rank swung the most over ${d.window_label}`, body);
+}
+
+// ---------- widget 6: joined / dropped off
+function churn(d) {
+  const c = d.churn;
+  const list = (items, label) => items.length
+    ? h("ol", {}, items.map(it => h("li", {}, h("span", { class: "n" }, it.rank == null ? "–" : "#" + it.rank), h("span", { class: "name" }, it.name))))
+    : h("div", { class: "empty-note" }, label);
+  const more = (n, shown) => n > shown ? h("div", { class: "empty-note" }, `…and ${n - shown} more`) : null;
+  const body = h("div", { class: "churn" },
+    h("div", {}, h("h3", {}, `Joined the board (${c.joined_total})`), list(c.joined, "Nobody new."), more(c.joined_total, c.joined.length)),
+    h("div", {}, h("h3", {}, `Dropped off (${c.dropped_total})`), list(c.dropped, "Nobody left."), more(c.dropped_total, c.dropped.length)));
+  return card("New and gone", `Players who appeared on or disappeared from the leaderboard over ${d.window_label} (rank now / rank when last seen)`, body, true);
+}
+
+// ---------- page
+function render() {
+  const d = state.data, main = document.getElementById("main");
+  if (!d) return;
+  if (d.error) { main.replaceChildren(h("div", { class: "notice" }, "Couldn't read the database: ", d.error)); return; }
+  if (d.empty) {
+    const lr = d.last_run;
+    main.replaceChildren(h("div", { class: "notice" },
+      h("h2", {}, "No leaderboard data yet"),
+      h("p", {}, "Run the scraper at least once: ", h("code", {}, "python scraper.py --once --browser")),
+      lr && lr.status === "error" ? h("p", {}, "The last run failed: ", lr.error) : null,
+      h("p", {}, "This page checks again every 2 minutes.")));
+    document.getElementById("subtitle").textContent = "Waiting for data";
+    return;
+  }
+  document.getElementById("subtitle").textContent =
+    `Latest snapshot ${when(d.latest_at)} · comparing with ${when(d.base_at)}`;
+  main.replaceChildren(h("div", { class: "grid", id: "grid" },
+    kpis(d), movers(d), gainers(d), race(d), volatile(d), churn(d)));
+}
+async function load() {
+  const grid = document.getElementById("grid");
+  if (grid) grid.classList.add("loading");
+  try {
+    const res = await fetch("/api/data?window=" + encodeURIComponent(state.window), { cache: "no-store" });
+    state.data = await res.json();
+    document.getElementById("refresh").textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " · refreshes every 2 minutes";
+  } catch (e) {
+    document.getElementById("refresh").textContent = "Can't reach the dashboard server. Is dashboard.py still running?";
+    if (grid) grid.classList.remove("loading");
+    return;
+  }
+  render();
+}
+function setWindow(w) {
+  state.window = w;
+  for (const b of document.querySelectorAll("#windows button")) b.setAttribute("aria-pressed", String(b.dataset.w === w));
+  try { localStorage.setItem("lb-window", w); } catch (e) {}
+  load();
+}
+document.getElementById("windows").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setWindow(b.dataset.w); });
+let saved = null;
+try { saved = localStorage.getItem("lb-window"); } catch (e) {}
+setWindow(["1h", "6h", "24h", "7d", "all"].includes(saved) ? saved : "24h");
+setInterval(load, REFRESH_MS);
+let rz; addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(render, 150); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+</script>
+</body>
+</html>

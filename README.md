@@ -23,6 +23,7 @@ flowchart LR
     D --> Q["🔎 Questions<br/>query.py"]
     D --> E["📄 Spreadsheets<br/>export.py → Excel"]
     D --> V["🖱️ DB Browser<br/>point and click"]
+    D --> G["📈 Dashboard<br/>dashboard.py"]
 ```
 
 | Part | What it is | What it does |
@@ -31,7 +32,8 @@ flowchart LR
 | **Scraper** (`scraper.py`) | The main program | Each run: opens the leaderboard, collects every row from every page, and stores the lot as one dated "snapshot". If a run fails, it records why, so gaps in the data can be explained. |
 | **Hidden browser** | Google's Chromium browser, controlled by the scraper | The website blocks simple programs and builds its table with JavaScript, so the scraper uses a real browser in the background. It reads page 1, clicks **Next** until there are no more pages, and hands the rows back. |
 | **Database** (`data\leaderboard.db`) | One file on the PC (SQLite) | Keeps every snapshot. One list records each run (when, how many rows, success or failure); the other holds every leaderboard line from every run. Nothing is overwritten, so the history only grows. |
-| **Getting answers out** | `query.py`, `export.py`, DB Browser | Three ways to use the data: ready-made one-line questions (top 10, a player's history, biggest climbers), CSV files for Excel, or a free point-and-click app. |
+| **Dashboard** (`dashboard.py`) | A web page that runs on the same PC | The quickest way to see what's happening: big movers, the top-5 race, score gains, the most changeable players, who joined or left, and whether the tracker is healthy. Updates itself every 2 minutes. |
+| **Getting answers out** | `query.py`, `export.py`, DB Browser | Three ways to dig deeper: ready-made one-line questions (top 10, a player's history, biggest climbers), CSV files for Excel, or a free point-and-click app. |
 
 **How a single run works:**
 1. The timer starts the scraper.
@@ -238,6 +240,53 @@ python query.py "SELECT * FROM history WHERE name = 'Some Name'" -o some-name.cs
 ```
 
 Times in `scraped_at` are UTC (UK winter time; one hour behind UK summer time).
+
+## 8. Dashboard
+
+A live page with the main analysis. It runs on your PC and opens in your web browser.
+
+```
+python dashboard.py
+```
+
+Your browser opens at <http://localhost:8050>. Leave the PowerShell window open while you use
+it; press **Ctrl+C** in that window to stop it. The page refreshes itself every 2 minutes.
+The scraper and the dashboard run side by side, so use two PowerShell windows.
+
+Want to see it before you have real data? This fills `data\demo.db` with three days of made-up history:
+
+```
+python dashboard.py --demo
+```
+
+Use the **Compare over** buttons at the top (last hour, 6 hours, 24 hours, 7 days, all time)
+to change the period every widget looks at.
+
+| Widget | What it shows |
+|---|---|
+| **At a glance** | Players on the board, when the last update was (with a ✓ Up to date / ! Delayed / ✕ Stopped light), how many runs worked in the last 24 hours, and how much history has been collected. |
+| **Big movers** | The 8 biggest climbers and 8 biggest fallers over the period, with their rank then → now. |
+| **Biggest score gains** | Who added the most points over the period. A good guide to who's most active. |
+| **Top 5 race** | A chart of how today's top 5 have swapped places over the period. Hover for exact ranks at any time, or click **Show as table**. |
+| **Most changeable** | Players in the top 100 whose rank swung the most, with their best, worst and a mini trend line. |
+| **New and gone** | Players who joined the leaderboard or dropped off it during the period. |
+
+Hover over (or tab to) any bar or chart for exact numbers. The page follows your Windows
+light/dark setting.
+
+To let others on your network open it (they use your PC's address, which is shown when it starts):
+
+```
+python dashboard.py --share
+```
+
+Windows may ask whether to allow Python through the firewall. Allow it on **private** networks only.
+
+If port 8050 is already in use:
+
+```
+python dashboard.py --port 8051
+```
 
 ## Updating the scraper
 
