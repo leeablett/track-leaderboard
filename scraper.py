@@ -237,15 +237,29 @@ class BrowserPager:
     """Drives a real Chromium browser, so JavaScript-rendered pages and
     click-to-paginate leaderboards work."""
 
-    def __init__(self, headed: bool = False):
+    # Tried in order when no browser is named: Playwright's own Chromium, then the
+    # browsers already on the PC (Edge is on every Windows 10/11 machine).
+    CHANNELS = ("chromium", "msedge", "chrome")
+
+    def __init__(self, headed: bool = False, channel: str = "auto"):
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
-        try:
-            self.browser = self._pw.chromium.launch(headless=not headed)
-        except Exception:
+        tried = []
+        for ch in (self.CHANNELS if channel == "auto" else (channel,)):
+            try:
+                kw = {} if ch == "chromium" else {"channel": ch}
+                self.browser = self._pw.chromium.launch(headless=not headed, **kw)
+                log.debug("using browser: %s", ch)
+                break
+            except Exception as exc:
+                tried.append(f"{ch}: {str(exc).strip().splitlines()[0]}")
+        else:
             self._pw.stop()
-            raise
+            raise RuntimeError(
+                "couldn't start a browser. Install Microsoft Edge or Google Chrome, or run "
+                "'python -m playwright install chromium'. Tried -> " + " | ".join(tried)
+            )
         self.page = self.browser.new_page()
         self.status = None
         self.visited: set[str] = set()
@@ -407,7 +421,7 @@ def run_once(args) -> bool:
     conn = connect(args.db)
     pager = None
     try:
-        pager = BrowserPager(headed=args.headed) if args.browser else HttpPager()
+        pager = BrowserPager(headed=args.headed, channel=args.browser_channel) if args.browser else HttpPager()
         entries, pages = scrape(pager, args.url, args.max_pages, args.page_delay)
         if not entries:
             raise RuntimeError("scrape returned no rows")
@@ -437,6 +451,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="use a real Chromium browser (needed if the site blocks plain requests "
                         "or draws the leaderboard with JavaScript)")
     p.add_argument("--headed", action="store_true", help="with --browser: show the browser window")
+    p.add_argument("--browser-channel", default="auto", choices=["auto", *BrowserPager.CHANNELS],
+                   help="with --browser: which browser to use (default: Playwright's Chromium if "
+                        "installed, otherwise Microsoft Edge, otherwise Google Chrome)")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
 

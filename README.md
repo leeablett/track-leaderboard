@@ -89,11 +89,18 @@ cd track-leaderboard
 python -m pip install -r requirements.txt
 ```
 
+**Optional:** download Playwright's own copy of Chromium (about 150 MB):
+
 ```
 python -m playwright install chromium
 ```
 
-The second command downloads the browser the scraper uses (about 150 MB).
+You can skip this. If it isn't installed, or the download fails, the scraper automatically
+uses **Microsoft Edge**, which every Windows 10 and 11 PC already has (or Google Chrome).
+Run the test in step 4 to check.
+
+> Paste and run commands **one at a time**. If PowerShell shows `>>` at the start of the
+> line, it's waiting for more input and hasn't run anything: press **Ctrl+C** and try again.
 
 ## 4. Test run
 
@@ -404,6 +411,7 @@ python -m pip install -r requirements.txt
 | `--loop 120` | Scrape every 120 seconds until stopped |
 | `--browser` | Use a real browser (needed for this site) |
 | `--headed` | Show the browser window (with `--browser`) |
+| `--browser-channel msedge` | Which browser to use: `auto` (default), `chromium`, `msedge` or `chrome` |
 | `--page-delay 0.5` | Seconds to wait between pages |
 | `--max-pages 200` | Safety limit on pages per run |
 | `--db PATH` | Use a different database file |
@@ -416,7 +424,10 @@ python -m pip install -r requirements.txt
 | `'python' is not recognized` | Python isn't on PATH. Re-run the Python installer, choose **Modify**, tick **Add Python to environment variables**, then open a new window. |
 | Typing `python` opens the Microsoft Store | Use `py` in place of `python`, e.g. `py scraper.py --once --browser`. |
 | `No module named 'bs4'` or `'playwright'` | Run `python -m pip install -r requirements.txt` again. |
-| `Executable doesn't exist ... chromium` | Run `python -m playwright install chromium`. |
+| `Failed to install browsers` / `Failed to download Chrome for Testing` | Skip that step; the scraper uses Microsoft Edge instead. Check with `python scraper.py --once --browser -v`; the log should say `using browser: msedge`. |
+| `couldn't start a browser` | No usable browser was found. Install or update Microsoft Edge (or Google Chrome), or retry `python -m playwright install chromium` on a different network. |
+| You want a particular browser | Add `--browser-channel msedge` (Edge), `--browser-channel chrome` (Google Chrome) or `--browser-channel chromium` (Playwright's own). |
+| `>>` appears at the start of the line in PowerShell | PowerShell is waiting for more input; nothing has run. Press **Ctrl+C**, then paste one command at a time. |
 | `HTTP 406: the site's firewall blocked the request` | Add `--browser` to the command. |
 | `the site's firewall blocked the browser too` | Try adding `--headed`. If it's still blocked, the site doesn't allow automated access; contact the site owner. |
 | `no leaderboard <table> found` | The page was saved to `data\debug\page_1.html`. Send that file over so the scraper can be adjusted. |
