@@ -6,12 +6,15 @@ Usage:
     python dashboard.py --demo       # same, with made-up demo data (data/demo.db)
     python dashboard.py --port 9000  # use a different port
     python dashboard.py --share      # let other PCs on your network open it too
+    python dashboard.py --status     # is it running?
+    python dashboard.py --stop       # stop a running dashboard (e.g. one started in the background)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import socket
 import sqlite3
@@ -22,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.request import ProxyHandler, Request, build_opener
 
 from scraper import DEFAULT_DB, connect, store
 
@@ -243,6 +247,9 @@ def make_handler(db: Path):
             url = urlparse(self.path)
             if url.path in ("/", "/index.html"):
                 self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            elif url.path == "/api/ping":
+                self._send(200, json.dumps({"app": "track-leaderboard", "pid": os.getpid(),
+                                            "db": str(db)}).encode(), "application/json")
             elif url.path == "/api/data":
                 window = parse_qs(url.query).get("window", ["24h"])[0]
                 try:
@@ -260,10 +267,29 @@ def make_handler(db: Path):
             else:
                 self._send(404, b"not found", "text/plain")
 
+        def do_POST(self):
+            # Only this PC may stop the dashboard, even when it's shared on the network.
+            if urlparse(self.path).path == "/api/shutdown" and self.client_address[0] in ("127.0.0.1", "::1"):
+                self._send(200, b'{"stopping": true}', "application/json")
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+            else:
+                self._send(403 if urlparse(self.path).path == "/api/shutdown" else 404, b"", "text/plain")
+
         def log_message(self, *args):
             pass
 
     return Handler
+
+
+def ask(port: int, path: str, method: str = "GET") -> dict | None:
+    """Talk to a dashboard already running on this PC. Returns None if nothing answers."""
+    opener = build_opener(ProxyHandler({}))  # never send localhost requests through a proxy
+    try:
+        with opener.open(Request(f"http://127.0.0.1:{port}{path}", method=method, data=b"" if method == "POST" else None),
+                         timeout=5) as resp:
+            return json.loads(resp.read() or b"{}")
+    except Exception:
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -273,7 +299,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--demo", action="store_true", help="use made-up demo data (data/demo.db)")
     p.add_argument("--share", action="store_true", help="allow other PCs on your network to open it")
     p.add_argument("--no-browser", action="store_true", help="don't open a browser window")
+    p.add_argument("--status", action="store_true", help="say whether the dashboard is running")
+    p.add_argument("--stop", action="store_true", help="stop the dashboard running on --port")
     args = p.parse_args(argv)
+    url = f"http://localhost:{args.port}"
+
+    running = ask(args.port, "/api/ping")
+    is_ours = bool(running and running.get("app") == "track-leaderboard")
+    if args.status:
+        if is_ours:
+            print(f"Dashboard is running at {url} (process {running['pid']}, reading {running['db']})")
+            return 0
+        print(f"Dashboard is not running on port {args.port}.")
+        return 1
+    if args.stop:
+        if not is_ours:
+            print(f"Dashboard is not running on port {args.port}.")
+            return 1
+        ask(args.port, "/api/shutdown", "POST")
+        print("Dashboard stopped.")
+        return 0
+    if is_ours:
+        print(f"Dashboard is already running at {url}." + ("" if args.no_browser else " Opening it."))
+        if not args.no_browser:
+            webbrowser.open(url)
+        return 0
 
     db = args.db
     if args.demo:
@@ -290,7 +340,6 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         print(f"Can't start on port {args.port} ({exc}). Try another, e.g. --port 8051", file=sys.stderr)
         return 1
-    url = f"http://localhost:{args.port}"
     print(f"Dashboard running at {url}  (reading {db})")
     if args.share:
         try:

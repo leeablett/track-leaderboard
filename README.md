@@ -243,21 +243,109 @@ Times in `scraped_at` are UTC (UK winter time; one hour behind UK summer time).
 
 ## 8. Dashboard
 
-A live page with the main analysis. It runs on your PC and opens in your web browser.
+A live page with the main analysis, viewed in your web browser at <http://localhost:8050>.
+
+The dashboard is a **separate process** from the scraper. Each starts and stops on its own:
+stopping the dashboard never stops the data collection, and the dashboard can be opened or
+closed at any time. Run all commands from your scraper folder (e.g. `cd D:\github\track-leaderboard`).
+
+### Quick reference
+
+| To… | Run |
+|---|---|
+| Start it in the background (no window) | `Start-Process pythonw dashboard.py` |
+| Check whether it's running | `python dashboard.py --status` |
+| Open it in your browser | `python dashboard.py` (if it's already running, this just opens the page) |
+| Stop it | `python dashboard.py --stop` |
+| Try it with made-up data | `python dashboard.py --demo` |
+
+### Option A: start it in its own window
+
+Start:
 
 ```
 python dashboard.py
 ```
 
-Your browser opens at <http://localhost:8050>. Leave the PowerShell window open while you use
-it; press **Ctrl+C** in that window to stop it. The page refreshes itself every 2 minutes.
-The scraper and the dashboard run side by side, so use two PowerShell windows.
+Your browser opens the dashboard. Keep this PowerShell window open while you use it.
+
+Stop: click in that window and press **Ctrl+C**, or just close the window.
+
+### Option B: start it in the background (recommended)
+
+This runs the dashboard with no window, so you can close PowerShell and it keeps going.
+
+Start (PowerShell):
+
+```
+Start-Process pythonw dashboard.py
+```
+
+In Command Prompt use this instead:
+
+```
+start "" pythonw dashboard.py
+```
+
+Your browser opens the dashboard after a second or two. Close the browser tab whenever you
+like; the dashboard keeps running in the background until you stop it or log off.
+
+Check it's running:
+
+```
+python dashboard.py --status
+```
+
+✅ You should see `Dashboard is running at http://localhost:8050 (process 1234, ...)`.
+
+Open it again later:
+
+```
+python dashboard.py
+```
+
+Stop it:
+
+```
+python dashboard.py --stop
+```
+
+✅ You should see `Dashboard stopped.` Running `--status` again then says `Dashboard is not running on port 8050.`
+
+### Option C: start it automatically when you log on
+
+1. Open **Task Scheduler** and click **Create Basic Task…**
+2. **Name:** `Leaderboard dashboard`. **Trigger:** **When I log on**. **Action:** **Start a program**.
+3. Fill in (find the Python folder with `where.exe python`, as in step 5):
+   - **Program/script:** your `pythonw.exe`, e.g. `C:\Users\YOURNAME\AppData\Local\Programs\Python\Python312\pythonw.exe`
+   - **Add arguments:** `dashboard.py --no-browser`
+   - **Start in:** your scraper folder, e.g. `D:\github\track-leaderboard`
+4. Tick **Open the Properties dialog…**, click **Finish**, then on the **Settings** tab **untick** *Stop the task if it runs longer than…* and click **OK**.
+
+Open the dashboard any time with `python dashboard.py` or by browsing to <http://localhost:8050>.
+Stop it with `python dashboard.py --stop`. It starts again at your next log on, or right-click
+the task and choose **Run**.
+
+### Running the scraper and dashboard together
+
+| Process | Start | Stop |
+|---|---|---|
+| Scraper (collects data) | `python scraper.py --loop 120 --browser`, or the Task Scheduler task from step 5 | **Ctrl+C** in its window, or right-click its task → **End** |
+| Dashboard (shows data) | `Start-Process pythonw dashboard.py`, or the Task Scheduler task above | `python dashboard.py --stop` |
+
+### Demo data
 
 Want to see it before you have real data? This fills `data\demo.db` with three days of made-up history:
 
 ```
 python dashboard.py --demo
 ```
+
+If a dashboard is already running, stop it first (`python dashboard.py --stop`), otherwise
+this just opens the one already running. To go back to real data, stop the demo and start
+it normally.
+
+### Using the dashboard
 
 Use the **Compare over** buttons at the top (last hour, 6 hours, 24 hours, 7 days, all time)
 to change the period every widget looks at.
@@ -282,11 +370,21 @@ python dashboard.py --share
 
 Windows may ask whether to allow Python through the firewall. Allow it on **private** networks only.
 
-If port 8050 is already in use:
+If port 8050 is used by another program, pick another port. Use the same `--port` with `--status` and `--stop`:
 
 ```
 python dashboard.py --port 8051
 ```
+
+### Dashboard problems
+
+| What you see | What to do |
+|---|---|
+| `Can't start on port 8050` | Something else is using that port. Start with `--port 8051` (and use `--port 8051` with `--status` / `--stop`). |
+| Browser says *This site can't be reached* | The dashboard isn't running. Start it again. `python dashboard.py --status` confirms. |
+| Page shows *No leaderboard data yet* | The scraper hasn't saved a successful run yet. Start the scraper (step 5). |
+| Page shows the demo players | You started it with `--demo`. Run `python dashboard.py --stop`, then start it without `--demo`. |
+| `pythonw` is not recognized | Use `pyw` instead: `Start-Process pyw dashboard.py`. |
 
 ## Updating the scraper
 
