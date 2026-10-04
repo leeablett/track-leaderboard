@@ -1,0 +1,3 @@
+# Scrape the leaderboard every 2 minutes. Install with: crontab -e  (adjust the path)
+# flock stops a new run starting if the previous one is still going.
+*/2 * * * * cd /home/USER/track-leaderboard && flock -n /tmp/track-leaderboard.lock .venv/bin/python scraper.py --once >> logs/scraper.log 2>&1

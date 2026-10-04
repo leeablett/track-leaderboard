@@ -1,0 +1,20 @@
+# systemd service that keeps the scraper running every 120s and restarts it on failure.
+# Install:
+#   sudo cp deploy/track-leaderboard.service /etc/systemd/system/
+#   (edit User= and the paths below)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now track-leaderboard
+#   journalctl -u track-leaderboard -f      # view logs
+[Unit]
+Description=Scrape and track VFM leaderboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=USER
+WorkingDirectory=/home/USER/track-leaderboard
+ExecStart=/home/USER/track-leaderboard/.venv/bin/python scraper.py --loop 120
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
