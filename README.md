@@ -8,18 +8,18 @@ of ranks and scores to process later.
 
 ## Setup
 
+**New to Python? Follow the step-by-step [Setup guide](SETUP.md)** (Windows, Mac, Linux/Raspberry Pi).
+
+Quick version, if you already have Python 3.9+ and Git:
+
 ```bash
 git clone https://github.com/leeablett/track-leaderboard
 cd track-leaderboard
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt     # Windows: .venv\Scripts\pip install -r requirements.txt
 mkdir -p logs
-```
-
-Do a test run first:
-
-```bash
-.venv/bin/python scraper.py --once -v
+.venv/bin/python scraper.py --once -v         # test run
+.venv/bin/python scraper.py --loop 120        # every 2 minutes
 ```
 
 If it prints `no <table> found`, the page HTML is saved to `data/debug/page_1.html`.
@@ -27,14 +27,12 @@ Send that file over and the parser can be adjusted.
 
 ## Running every 2 minutes
 
-Choose one option:
-
-| Option | Command / file | Best for |
+| Option | How | Best for |
 |---|---|---|
-| Built-in loop | `.venv/bin/python scraper.py --loop 120` | Quick start, any OS (keep the terminal open) |
+| Built-in loop | `scraper.py --loop 120` | Quick start, any OS (keep the window open) |
 | cron | [`deploy/crontab.example`](deploy/crontab.example) | Linux / macOS / Raspberry Pi |
 | systemd | [`deploy/track-leaderboard.service`](deploy/track-leaderboard.service) | Linux servers: starts on boot, restarts on failure |
-| Task Scheduler | Run `python scraper.py --once`, trigger repeating every 2 minutes | Windows |
+| Task Scheduler | See [SETUP.md](SETUP.md#step-7-run-it-every-2-minutes) | Windows |
 
 Options: `--url`, `--db PATH`, `--max-pages` (safety cap, default 200),
 `--page-delay` (seconds between page requests, default 0.5), `-v` for debug logs.
