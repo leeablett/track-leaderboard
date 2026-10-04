@@ -60,22 +60,21 @@ The scraper is now in `C:\Users\<your name>\track-leaderboard`.
 ### Step 5: Install the scraper's libraries
 
 ```
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python -m playwright install chromium
+python -m pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
 The `playwright install` line downloads the browser the scraper uses (about 150 MB).
 
 ✅ **You should see** `Successfully installed ... playwright ...` and then the Chromium download finishing.
 
-> **Always type `.venv\Scripts\python`** (with backslashes) on Windows, not `python` on its own
-> and not `.venv/bin/python`. That's the copy of Python with the scraper's libraries installed.
+> On Windows, every command in this guide starts with plain `python`. Ignore any
+> `.venv/bin/python` you see elsewhere; that's the Mac/Linux style.
 
 ### Step 6: Do a test run
 
 ```
-.venv\Scripts\python scraper.py --once --browser
+python scraper.py --once --browser
 ```
 
 ✅ **You should see** a line like:
@@ -92,7 +91,7 @@ go to [Problems](#problems).
 **Option A: Easy (runs while the window is open)**
 
 ```
-.venv\Scripts\python scraper.py --loop 120 --browser
+python scraper.py --loop 120 --browser
 ```
 
 Leave the window open. Closing it or shutting down the PC stops the scraper.
@@ -104,13 +103,18 @@ Leave the window open. Closing it or shutting down the PC stops the scraper.
 3. **Name:** `Track leaderboard`, then click **Next**.
 4. **Trigger:** choose **When I log on**, then click **Next**.
 5. **Action:** choose **Start a program**, then click **Next**.
-6. Fill in the three boxes. Replace `YOURNAME` with your Windows user name:
-   - **Program/script:** `C:\Users\YOURNAME\track-leaderboard\.venv\Scripts\pythonw.exe`
+6. Find where Python is installed. In Command Prompt or PowerShell, run `where.exe python`.
+   It prints something like `C:\Users\YOURNAME\AppData\Local\Programs\Python\Python312\python.exe`.
+   Use the same folder, but with **`pythonw.exe`** at the end.
+7. Fill in the three boxes:
+   - **Program/script:** the `pythonw.exe` path from step 6, e.g.
+     `C:\Users\YOURNAME\AppData\Local\Programs\Python\Python312\pythonw.exe`
    - **Add arguments:** `scraper.py --loop 120 --browser`
-   - **Start in:** `C:\Users\YOURNAME\track-leaderboard`
-7. Click **Next**, tick **Open the Properties dialog…**, then click **Finish**.
-8. In Properties, open the **Settings** tab and **untick** *Stop the task if it runs longer than…*. Click **OK**.
-9. To start it now without logging out, right-click the task and choose **Run**.
+   - **Start in:** the folder you downloaded the scraper to, e.g. `C:\Users\YOURNAME\track-leaderboard`
+     or `D:\github\track-leaderboard`
+8. Click **Next**, tick **Open the Properties dialog…**, then click **Finish**.
+9. In Properties, open the **Settings** tab and **untick** *Stop the task if it runs longer than…*. Click **OK**.
+10. To start it now without logging out, right-click the task and choose **Run**.
 
 `pythonw.exe` runs it in the background with no window. To check it's working, see
 [Checking it's working](#checking-its-working).
@@ -246,7 +250,7 @@ spreadsheet, run this in the `track-leaderboard` folder:
 
 | Windows | Mac / Linux |
 |---|---|
-| `.venv\Scripts\python export.py latest -o latest.csv` | `.venv/bin/python export.py latest -o latest.csv` |
+| `python export.py latest -o latest.csv` | `.venv/bin/python export.py latest -o latest.csv` |
 
 Then open `latest.csv` in Excel, Numbers or Google Sheets. Run it again a few minutes
 later; the `scraped_at` time should have moved on.
@@ -258,11 +262,11 @@ later; the `scraped_at` time should have moved on.
 | What you see | What to do |
 |---|---|
 | `'python' is not recognized` (Windows) | PATH wasn't ticked in Step 1. Run the Python installer again, choose **Modify** → **Next**, tick **Add Python to environment variables**, then **Install**. Open a new Command Prompt. |
-| Typing `python` opens the Microsoft Store (Windows) | Use `py` in place of `python` in Steps 3 and 5, e.g. `py -m venv .venv`. |
+| Typing `python` opens the Microsoft Store (Windows) | Use `py` in place of `python` in every command, e.g. `py scraper.py --once --browser`. |
 | `'git' is not recognized` / `command not found: git` | Install Git (Step 2), then open a **new** terminal window. |
 | `No module named venv` (Linux) | Run `sudo apt install -y python3-venv`, then repeat the step. |
-| `.venv/bin/python : The term ... is not recognized` (Windows) | You used the Mac/Linux command. On Windows type `.venv\Scripts\python`. |
-| `No module named 'bs4'` or `No module named 'playwright'` | You ran plain `python`. Use `.venv\Scripts\python` (Windows) or `.venv/bin/python` (Mac/Linux). If it still happens, repeat the install step. |
+| `.venv/bin/python : The term ... is not recognized` (Windows) | You used the Mac/Linux command. On Windows type plain `python`. |
+| `No module named 'bs4'` or `No module named 'playwright'` | The libraries aren't installed for the Python you ran. Windows: run `python -m pip install -r requirements.txt` again. Mac/Linux: make sure you typed `.venv/bin/python`. |
 | `HTTP 406: the site's firewall blocked the request` | Add `--browser` to the command. |
 | `Executable doesn't exist ... chromium` | Run the `playwright install chromium` line from the install step. |
 | `the site's firewall blocked the browser too` | Try `--browser --headed` (shows the browser window). If it's still blocked, the site doesn't allow automated access; contact the site owner. |

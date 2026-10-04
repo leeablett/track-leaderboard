@@ -23,7 +23,7 @@ mkdir -p logs
 .venv/bin/python scraper.py --loop 120 --browser    # every 2 minutes
 ```
 
-On Windows use `.venv\Scripts\python` in place of `.venv/bin/python` (and `.venv\Scripts\python -m pip` for pip).
+On Windows you can skip the `.venv` and use plain `python` throughout (`python -m pip install -r requirements.txt`, `python scraper.py ...`); see [SETUP.md](SETUP.md#windows).
 
 **Why `--browser`:** the site's firewall (Mod_Security) rejects plain HTTP clients with
 `406 Not Acceptable`, and the leaderboard may be drawn with JavaScript. `--browser` drives a
