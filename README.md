@@ -5,6 +5,50 @@ Scrape and track the leaderboard at <https://vfm.bdynamicsstudio.com/leaderboard
 Every run reads **all pages** of the leaderboard and saves them as one timestamped snapshot in
 `data\leaderboard.db`, so you build up a full history of ranks and scores.
 
+## Executive summary (for Jamie)
+
+**What it does:** every 2 minutes, a PC visits the public leaderboard, reads every page of it,
+and saves a copy with the time it was taken. Over days and weeks this builds a complete
+history, so we can see who is climbing or falling, by how much, and when. The website only
+ever shows the leaderboard as it is right now.
+
+**The moving parts:**
+
+```mermaid
+flowchart LR
+    T["⏱️ Timer<br/>every 2 minutes"] --> S["🤖 Scraper<br/>scraper.py"]
+    S --> B["🌐 Hidden browser<br/>reads every page"]
+    B --> W["📊 Leaderboard website"]
+    S --> D[("🗄️ Database<br/>leaderboard.db")]
+    D --> Q["🔎 Questions<br/>query.py"]
+    D --> E["📄 Spreadsheets<br/>export.py → Excel"]
+    D --> V["🖱️ DB Browser<br/>point and click"]
+```
+
+| Part | What it is | What it does |
+|---|---|---|
+| **Timer** | Windows Task Scheduler, or a window left open | Starts the scraper every 2 minutes, and starts it again automatically when the PC is switched on and someone logs in. |
+| **Scraper** (`scraper.py`) | The main program | Each run: opens the leaderboard, collects every row from every page, and stores the lot as one dated "snapshot". If a run fails, it records why, so gaps in the data can be explained. |
+| **Hidden browser** | Google's Chromium browser, controlled by the scraper | The website blocks simple programs and builds its table with JavaScript, so the scraper uses a real browser in the background. It reads page 1, clicks **Next** until there are no more pages, and hands the rows back. |
+| **Database** (`data\leaderboard.db`) | One file on the PC (SQLite) | Keeps every snapshot. One list records each run (when, how many rows, success or failure); the other holds every leaderboard line from every run. Nothing is overwritten, so the history only grows. |
+| **Getting answers out** | `query.py`, `export.py`, DB Browser | Three ways to use the data: ready-made one-line questions (top 10, a player's history, biggest climbers), CSV files for Excel, or a free point-and-click app. |
+
+**How a single run works:**
+1. The timer starts the scraper.
+2. The scraper opens the hidden browser and loads the leaderboard.
+3. It reads the table, clicks **Next**, and repeats until the last page.
+4. It saves all the rows as one snapshot with the current time.
+5. It closes the browser and waits for the next run. Each run takes a few seconds.
+
+**What to be aware of:**
+- **It only collects while the PC is on.** If the PC is off or asleep, those minutes are missed and can't be recovered. For an unbroken record it needs a machine that stays on.
+- **The website doesn't welcome automated visitors.** It has a firewall that blocks simple programs. We get past it by using a normal browser, but the site's owners could tighten this or object. Asking them for permission, or for a data feed, would be the most reliable long-term option.
+- **Website changes can break it.** If the site's layout changes, the scraper records an error rather than saving bad data, and will need a small fix.
+- **It's not been run against the live site yet.** It's been tested against realistic copies of the site; the first live run will confirm it.
+- **Storage grows steadily**, roughly tens of MB a day. That's fine for months on a normal PC, and old data can be trimmed if needed.
+
+---
+
 Run every command below in **PowerShell** or **Command Prompt**, one line at a time.
 
 ## 1. Install Python and Git (once)
