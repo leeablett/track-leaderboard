@@ -272,6 +272,9 @@ class HttpPager:
         log.debug("page %d -> %d via %s", page_no, page_no + 1, how)
         return self.open(url)
 
+    def retry(self, page_no: int) -> str | None:
+        return None  # a plain request can't be "still loading"
+
     def screenshot(self, path: Path):
         pass
 
@@ -399,11 +402,36 @@ class BrowserPager:
         before = self.page.evaluate(TABLE_STATE_JS)
         self.clicked = True
         self.page.locator("[data-lb-next]").first.click()
+        # Wait until the table changes (new rows, more rows, or replaced while loading).
+        # If it doesn't, the repeated-rows check in scrape() asks for a retry.
+        self._wait_for_change(before, 20_000)
+        self._settle()
+        return self.page.content()
+
+    def _wait_for_change(self, before: str, timeout_ms: int) -> bool:
+        from playwright.sync_api import Error as PWError
+
         try:
-            # Wait until the table changes (new rows, more rows, or replaced while loading).
-            self.page.wait_for_function(f"prev => ({TABLE_STATE_JS})() !== prev", arg=before, timeout=20_000)
+            self.page.wait_for_function(f"prev => ({TABLE_STATE_JS})() !== prev", arg=before, timeout=timeout_ms)
+            return True
         except PWError:
-            pass  # unchanged rows are caught by the repeated-rows check
+            return False
+
+    def retry(self, page_no: int) -> str | None:
+        """Page `page_no` showed only rows we already have. It may still be loading, or the
+        click may not have registered: wait a little longer, then click Next once more."""
+        before = self.page.evaluate(TABLE_STATE_JS)
+        if self._wait_for_change(before, 10_000):
+            log.info("page %d was slow to load; read it again", page_no)
+            self._settle()
+            return self.page.content()
+        found = self.page.evaluate(NEXT_JS, page_no)
+        if found["action"] != "click":
+            return None
+        log.info("page %d didn't change after clicking; clicking %s again", page_no, found["how"])
+        self.page.locator("[data-lb-next]").first.click()
+        if not self._wait_for_change(before, 10_000):
+            return None
         self._settle()
         return self.page.content()
 
@@ -431,7 +459,8 @@ def expected_totals(soup: BeautifulSoup) -> tuple[int | None, int | None]:
 def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False) -> tuple[list[dict], int]:
     """Return (entries, pages_scraped). Each entry has page/position/rank/name/score/data."""
     entries: list[dict] = []
-    seen_rows: set[str] = set()
+    seen_rows: dict[str, int] = {}  # row -> page it was first read on
+    retried = False
     headers: list[str] | None = None
     exp_pages = exp_rows = None
     pages = 0
@@ -467,9 +496,21 @@ def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False
             reason = f"page {page_no} is empty"
             break
         if not new:
-            reason = f"page {page_no} only repeated rows already read"
+            # Either we're past the end (some sites re-show the last or first page), or the
+            # page hasn't finished loading / the click didn't register. Retry once to be sure.
+            if not retried and page_no > 1:
+                retried = True
+                again = pager.retry(page_no)
+                if again is not None:
+                    html = again
+                    continue
+            same_as = sorted({seen_rows[row_key(r)] for r in records})
+            reason = (f"page {page_no} only repeated rows already read "
+                      f"(the same rows as page {', '.join(map(str, same_as))})")
             break
-        seen_rows.update(row_key(r) for r in new)
+        retried = False
+        for r in new:
+            seen_rows[row_key(r)] = page_no
         pages = page_no
 
         for rec in new:

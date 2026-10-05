@@ -3,8 +3,8 @@
 Used by run_pagination_tests.py. Each style has 7 pages of 5 rows (\"many\" has 250 pages)."""
 import http.server, json, urllib.parse, time
 PER = 5
-MODES = {"next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
-def pages_for(mode): return 250 if mode == "many" else 7
+MODES = {"veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
+def pages_for(mode): return 250 if mode == "many" else 3 if mode in ("veryslow", "lostclick") else 7
 ROW = "r => `<tr><td>${r.rank}</td><td>${r.name}</td><td>${r.score}</td></tr>`"
 TABLE = "rows => '<table><thead><tr><th>Rank</th><th>Player</th><th>Score</th></tr></thead><tbody>' + rows.map(" + ROW + ").join('') + '</tbody></table>'"
 ARROW_SVG = '<svg width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" stroke="currentColor" fill="none"/></svg>'
@@ -23,6 +23,10 @@ def shell(mode):
         "slow_keep": "pager.innerHTML = `<button id=nxt ${p>=N?'disabled':''}>Next</button>`; if (p<N) nxt.onclick = () => go(p+1, 3000, false);",
         # "Load more" appends rows to the same table
         "loadmore": "pager.innerHTML = p<N ? `<button id=more>Load more</button>` : ''; if (p<N) more.onclick = () => go(p+1, 0, false, true);",
+        # each page takes 25 s to load (longer than the scraper's first wait)
+        "veryslow": "pager.innerHTML = `<button id=nxt ${p>=N?'disabled':''}>Next</button>`; if (p<N) nxt.onclick = () => go(p+1, 25000, false);",
+        # the site ignores the first click on each Next button
+        "lostclick": "pager.innerHTML = `<button id=nxt ${p>=N?'disabled':''}>Next</button>`; let clicks = 0; if (p<N) nxt.onclick = () => { if (++clicks === 1) return; go(p+1); };",
         # many pages with a plain Next
         "many": "pager.innerHTML = `<button id=nxt ${p>=N?'disabled':''}>Next</button>`; if (p<N) nxt.onclick = () => go(p+1);",
         # Next is an <a> with class 'page-link' and text 'Next ›' (bootstrap), no href change (#)

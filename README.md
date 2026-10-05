@@ -477,6 +477,7 @@ never touched by an update.
 | `the site's firewall blocked the browser too` | Try adding `--headed`. If it's still blocked, the site doesn't allow automated access; contact the site owner. |
 | `no leaderboard <table> found` | The page was saved to `data\debug\page_1.html`. Send that file over so the scraper can be adjusted. |
 | Not all pages are read | Every run logs a line like `read 12 page(s), 300 rows; stopped because the Next label is disabled (last page)`. Check the page count matches the website. If it doesn't, run `python scraper.py --once --browser --diagnose`, then send the log and the files in `data\debug` (a screenshot and HTML of each page). |
+| `stopped because page N only repeated rows already read (the same rows as page X)` | The scraper thought page N showed rows it had already saved, which normally means the end of the leaderboard. It now waits longer and clicks Next again before deciding this, so update first (`git pull`). If it still stops early: **X = N−1** means the page didn't change after clicking (too slow, or the click didn't register); **X = 1** means the site jumped back to page 1. Run with `--diagnose` and send the log and `data\debug` files. |
 | `WARNING the site says there are N pages but only M were read` | The scraper saw the site's own page count ("Page 1 of 37" or "1–25 of 912") and read fewer. Run with `--diagnose` as above and send the results. |
 | `WARNING stopped at --max-pages` | The leaderboard has more pages than the safety limit. Add e.g. `--max-pages 5000`. |
 
