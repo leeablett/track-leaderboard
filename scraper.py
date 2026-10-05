@@ -284,36 +284,72 @@ class HttpPager:
 
 # Browser-side version of the rules in next_page_url(). Marks the chosen control with
 # data-lb-next so Python can click it.
-NEXT_JS = r"""(want) => {
+NEXT_JS = r"""({ want, custom }) => {
   document.querySelectorAll('[data-lb-next]').forEach(e => e.removeAttribute('data-lb-next'));
   const LABEL = /^(?:(?:go to |show |view )?(?:the )?next(?: page)?\W*|[›»>→⟩❯▶]+)$/i;
   const CLASS = /(^|[-_\s])next($|[-_\s])/i;
+  const ICON = /(angles?-right|double-right|chevron-right|angle-right|arrow-right|caret-right|arrow_forward|navigate_next|forward|next)/i;
   const MORE = /^(load|show|view|see)\s+more\b.{0,20}$/i;
+  const PAGER = /pagina|pager|page-nav|pages\b|paging/i;
   const cls = e => [typeof e.className === 'string' ? e.className : '', e.id || '',
                     e.parentElement && typeof e.parentElement.className === 'string' ? e.parentElement.className : ''].join(' ');
   const label = e => ((e.innerText || '').trim() || e.getAttribute('aria-label') || e.getAttribute('title') || '').replace(/\s+/g, ' ');
+  const norm = t => t.replace(/»/g, '>>').replace(/«/g, '<<').replace(/›/g, '>').replace(/‹/g, '<').replace(/\s+/g, '').toLowerCase();
   const visible = e => { const r = e.getBoundingClientRect(), st = getComputedStyle(e);
                          return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
   const disabled = e => e.disabled || e.getAttribute('aria-disabled') === 'true' ||
                         /\bdisabled\b/i.test(cls(e)) || !!e.closest('[disabled], [aria-disabled="true"]');
-  const els = [...document.querySelectorAll('a, button, [role=button], [role=link]')]
+  const els = [...document.querySelectorAll('a, button, [role=button], [role=link], [onclick]')]
                 .filter(e => !e.closest('table') && visible(e));
-  const tiers = [
-    ['rel=next link', e => (e.getAttribute('rel') || '').split(/\s+/).includes('next'), true],
-    ['Next label', e => LABEL.test(label(e)), true],
-    ["'next' class", e => CLASS.test(cls(e)), true],
-    ['page number ' + want, e => label(e) === String(want), false],
-    ['Load more button', e => MORE.test(label(e)), true],
-  ];
+  // The leaderboard table: the biggest one.
+  const table = [...document.querySelectorAll('table')].sort((a, b) => b.rows.length - a.rows.length)[0];
+  const tb = table ? table.getBoundingClientRect() : null;
+  // Is this control part of the pagination bar? (a "pagination"-style container, or next to page numbers)
+  const inPager = e => {
+    let node = e.parentElement;
+    for (let i = 0; node && i < 4; i++, node = node.parentElement) {
+      if (table && node.contains(table)) return false;  // gone too far up: that's the whole page
+      if (PAGER.test((typeof node.className === 'string' ? node.className : '') + ' ' + (node.id || '') + ' ' + (node.getAttribute('aria-label') || ''))) return true;
+      const nums = [...node.querySelectorAll('a, button, [role=button]')].filter(x => /^\d+$/.test(label(x)));
+      if (nums.length >= 2) return true;
+    }
+    return false;
+  };
+  // Prefer controls in the pagination bar, then ones below the table, then page order.
+  const score = e => (inPager(e) ? 2 : 0) + (tb && e.getBoundingClientRect().top >= tb.bottom - 5 ? 1 : 0);
+  const best = found => found.map((e, i) => [score(e), -i, e]).sort((a, b) => b[0] - a[0] || b[1] - a[1]).map(x => x[2]);
+  const describe = e => `${e.tagName.toLowerCase()} "${label(e).slice(0, 30)}"` +
+                        (typeof e.className === 'string' && e.className ? ` class="${e.className.slice(0, 40)}"` : '') +
+                        (inPager(e) ? ' [in pagination]' : '') + (disabled(e) ? ' [disabled]' : '');
+  let tiers;
+  if (custom) {
+    // --next: a label (">>" also matches "»") or a CSS selector
+    let bySel = [];
+    try { bySel = [...document.querySelectorAll(custom)].filter(visible); } catch (err) {}
+    tiers = [['--next ' + custom, e => norm(label(e)) === norm(custom) || bySel.includes(e), true]];
+  } else {
+    tiers = [
+      ['rel=next link', e => (e.getAttribute('rel') || '').split(/\s+/).includes('next'), true],
+      ['Next label', e => LABEL.test(label(e)), true],
+      ["'next' class", e => CLASS.test(cls(e)), true],
+      ['next arrow icon', e => !/\w/.test(label(e)) && ICON.test(e.innerHTML) && inPager(e), true],
+      ['page number ' + want, e => label(e) === String(want), false],
+      ['Load more button', e => MORE.test(label(e)), true],
+    ];
+  }
+  const candidates = els.filter(e => inPager(e) || LABEL.test(label(e)) || CLASS.test(cls(e))).slice(0, 25).map(describe);
   for (const [how, test, endIfDisabled] of tiers) {
     const found = els.filter(test);
     if (!found.length) continue;
-    const usable = found.find(e => !disabled(e));
-    if (!usable) { if (endIfDisabled) return { action: 'end', how: 'the ' + how + ' is disabled (last page)' }; continue; }
+    // If the pagination bar has a match, only it counts: a disabled one there means the last
+    // page, even if some other arrow elsewhere on the page (e.g. a round switcher) is enabled.
+    const inBar = found.filter(inPager);
+    const usable = best(inBar.length ? inBar : found).find(e => !disabled(e));
+    if (!usable) { if (endIfDisabled) return { action: 'end', how: 'the ' + how + ' is disabled (last page)', candidates }; continue; }
     usable.setAttribute('data-lb-next', '1');
-    return { action: 'click', how: how + ' "' + label(usable).slice(0, 30) + '"' };
+    return { action: 'click', how: how + ': ' + describe(usable), candidates };
   }
-  return { action: 'none' };
+  return { action: 'none', candidates };
 }"""
 
 # A short fingerprint of the leaderboard table: row count plus first and last row.
@@ -333,8 +369,10 @@ class BrowserPager:
     # browsers already on the PC (Edge is on every Windows 10/11 machine).
     CHANNELS = ("chromium", "msedge", "chrome")
 
-    def __init__(self, headed: bool = False, channel: str = "auto"):
+    def __init__(self, headed: bool = False, channel: str = "auto", next_control: str | None = None):
         from playwright.sync_api import sync_playwright
+
+        self.next_control = next_control  # --next: label or CSS selector of the next-page control
 
         self._pw = sync_playwright().start()
         tried = []
@@ -383,11 +421,14 @@ class BrowserPager:
     def next(self, soup: BeautifulSoup, page_no: int) -> str | None:
         from playwright.sync_api import Error as PWError
 
-        found = self.page.evaluate(NEXT_JS, page_no + 1)
+        found = self._find_next(page_no + 1)
         if found["action"] == "end":
             self.stop_reason = found["how"]
             return None
         if found["action"] == "none":
+            if self.next_control:
+                self.stop_reason = f"no control matching --next {self.next_control!r} after page {page_no}"
+                return None
             if self.clicked:
                 self.stop_reason = f"no next-page control after page {page_no}"
                 return None
@@ -408,6 +449,13 @@ class BrowserPager:
         self._settle()
         return self.page.content()
 
+    def _find_next(self, want: int) -> dict:
+        found = self.page.evaluate(NEXT_JS, {"want": want, "custom": self.next_control})
+        if want == 2 or found["action"] != "click":
+            # Show what pagination controls were seen (with -v / --diagnose), to help if paging goes wrong.
+            log.debug("pagination controls seen: %s", "; ".join(found.get("candidates") or []) or "none")
+        return found
+
     def _wait_for_change(self, before: str, timeout_ms: int) -> bool:
         from playwright.sync_api import Error as PWError
 
@@ -425,7 +473,7 @@ class BrowserPager:
             log.info("page %d was slow to load; read it again", page_no)
             self._settle()
             return self.page.content()
-        found = self.page.evaluate(NEXT_JS, page_no)
+        found = self._find_next(page_no)
         if found["action"] != "click":
             return None
         log.info("page %d didn't change after clicking; clicking %s again", page_no, found["how"])
@@ -580,7 +628,8 @@ def run_once(args) -> bool:
     conn = connect(args.db)
     pager = None
     try:
-        pager = BrowserPager(headed=args.headed, channel=args.browser_channel) if args.browser else HttpPager()
+        pager = (BrowserPager(headed=args.headed, channel=args.browser_channel, next_control=args.next)
+                 if args.browser else HttpPager())
         entries, pages = scrape(pager, args.url, args.max_pages, args.page_delay, args.diagnose)
         if not entries:
             raise RuntimeError("scrape returned no rows")
@@ -613,6 +662,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--browser-channel", default="auto", choices=["auto", *BrowserPager.CHANNELS],
                    help="with --browser: which browser to use (default: Playwright's Chromium if "
                         "installed, otherwise Microsoft Edge, otherwise Google Chrome)")
+    p.add_argument("--next", metavar="LABEL_OR_CSS",
+                   help="with --browser: the control that goes to the next page, e.g. --next \">>\" "
+                        "(its text) or a CSS selector. Default: detect it automatically")
     p.add_argument("--diagnose", action="store_true",
                    help="save every page (HTML, plus a screenshot with --browser) to data/debug "
                         "and log how each next page was found")

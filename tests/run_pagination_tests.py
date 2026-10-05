@@ -25,6 +25,8 @@ CASES = [  # (style, use browser, expected rows)
     ("bootstrap", True, 35),       # "Next ›" link with href="#"
     ("ssr_next_text", True, 35),   # server-rendered "Next ›" links
     ("ssr_next_text", False, 35),  # same, without a browser
+    ("decoy", True, 35),           # ">>" in the pager; a "›" above the table resets to page 1
+    ("iconnext", True, 35),        # ">>" is an icon with no text; only pages 1-3 numbered
     ("veryslow", True, 15),        # each page takes 25 s to load
     ("lostclick", True, 15),       # first click on Next is ignored
     ("many", True, 1250),          # 250 pages

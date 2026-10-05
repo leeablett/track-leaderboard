@@ -3,7 +3,7 @@
 Used by run_pagination_tests.py. Each style has 7 pages of 5 rows (\"many\" has 250 pages)."""
 import http.server, json, urllib.parse, time
 PER = 5
-MODES = {"veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
+MODES = {"decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
 def pages_for(mode): return 250 if mode == "many" else 3 if mode in ("veryslow", "lostclick") else 7
 ROW = "r => `<tr><td>${r.rank}</td><td>${r.name}</td><td>${r.score}</td></tr>`"
 TABLE = "rows => '<table><thead><tr><th>Rank</th><th>Player</th><th>Score</th></tr></thead><tbody>' + rows.map(" + ROW + ").join('') + '</tbody></table>'"
@@ -23,6 +23,11 @@ def shell(mode):
         "slow_keep": "pager.innerHTML = `<button id=nxt ${p>=N?'disabled':''}>Next</button>`; if (p<N) nxt.onclick = () => go(p+1, 3000, false);",
         # "Load more" appends rows to the same table
         "loadmore": "pager.innerHTML = p<N ? `<button id=more>Load more</button>` : ''; if (p<N) more.onclick = () => go(p+1, 0, false, true);",
+        # ">>" in the pagination bar is next; from page 2 a "›" arrow ABOVE the table (e.g. a
+        # round/season switcher) also appears, and clicking it reloads page 1
+        "decoy": "roundbar.innerHTML = p>=2 ? `<button id=rnd>›</button> Round 5` : 'Round 5'; if (p>=2) rnd.onclick = () => go(1); let h=''; for (let i=1;i<=Math.min(3,N);i++) h+=`<a href='#' class='pg' data-p=${i}>${i}</a> `; h+=`<span>…</span> <a href='#' id=nx ${p>=N?'disabled':''}>&gt;&gt;</a>`; pager.innerHTML=h; pager.querySelectorAll('.pg').forEach(b=>b.onclick=e=>{e.preventDefault();go(+b.dataset.p)}); if (p<N) nx.onclick=e=>{e.preventDefault();go(p+1)};",
+        # ">>" drawn as an icon font glyph with no text, next to numbered pages 1-3 only
+        "iconnext": "let h=''; for (let i=1;i<=Math.min(3,N);i++) h+=`<button class=pg data-p=${i}>${i}</button>`; h+=`<button class='btn' ${p>=N?'disabled':''} id=nx><i class='fa fa-angle-double-right'></i></button>`; pager.innerHTML=h; pager.querySelectorAll('.pg').forEach(b=>b.onclick=()=>go(+b.dataset.p)); if (p<N) nx.onclick=()=>go(p+1);",
         # each page takes 25 s to load (longer than the scraper's first wait)
         "veryslow": "pager.innerHTML = `<button id=nxt ${p>=N?'disabled':''}>Next</button>`; if (p<N) nxt.onclick = () => go(p+1, 25000, false);",
         # the site ignores the first click on each Next button
@@ -32,7 +37,7 @@ def shell(mode):
         # Next is an <a> with class 'page-link' and text 'Next ›' (bootstrap), no href change (#)
         "bootstrap": "pager.innerHTML = `<ul class=pagination><li class='page-item ${p>=N?'disabled':''}'><a class=page-link href='#'>Next ›</a></li></ul>`; if (p<N) pager.querySelector('a').onclick = e => { e.preventDefault(); go(p+1); };",
     }[mode]
-    return f"""<html><body><div id=app>Loading…</div><div id=pager></div><script>
+    return f"""<html><body><div id=roundbar></div><div id=app>Loading…</div><div id=pager></div><script>
 let p = 1, N = {pages_for(mode)}, all = [];
 const table = {TABLE};
 async function go(n, delay=0, blank=false, append=false) {{

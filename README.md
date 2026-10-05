@@ -458,6 +458,7 @@ never touched by an update.
 | `--browser-channel msedge` | Which browser to use: `auto` (default), `chromium`, `msedge` or `chrome` |
 | `--page-delay 0.5` | Seconds to wait between pages |
 | `--max-pages 1000` | Safety limit on pages per run (a warning is logged if it's reached) |
+| `--next ">>"` | The control that goes to the next page: its text (`>>` also matches `»`) or a CSS selector. Normally found automatically |
 | `--diagnose` | Save every page (and a screenshot) to `data\debug` and log how each next page was found |
 | `--db PATH` | Use a different database file |
 | `-v` | Show detailed logs |
@@ -478,6 +479,7 @@ never touched by an update.
 | `no leaderboard <table> found` | The page was saved to `data\debug\page_1.html`. Send that file over so the scraper can be adjusted. |
 | Not all pages are read | Every run logs a line like `read 12 page(s), 300 rows; stopped because the Next label is disabled (last page)`. Check the page count matches the website. If it doesn't, run `python scraper.py --once --browser --diagnose`, then send the log and the files in `data\debug` (a screenshot and HTML of each page). |
 | `stopped because page N only repeated rows already read (the same rows as page X)` | The scraper thought page N showed rows it had already saved, which normally means the end of the leaderboard. It now waits longer and clicks Next again before deciding this, so update first (`git pull`). If it still stops early: **X = N−1** means the page didn't change after clicking (too slow, or the click didn't register); **X = 1** means the site jumped back to page 1. Run with `--diagnose` and send the log and `data\debug` files. |
+| It clicks the wrong control (e.g. `the same rows as page 1`) | Tell it which control goes to the next page. For this site that's the `>>` arrow: `python scraper.py --once --browser --next ">>"`. Use the same `--next ">>"` on your `--loop` command and in Task Scheduler's **Add arguments**. With `-v`, each page's log line shows what was clicked (e.g. `page 2 -> 3 via Next label: a ">>" [in pagination]`). |
 | `WARNING the site says there are N pages but only M were read` | The scraper saw the site's own page count ("Page 1 of 37" or "1–25 of 912") and read fewer. Run with `--diagnose` as above and send the results. |
 | `WARNING stopped at --max-pages` | The leaderboard has more pages than the safety limit. Add e.g. `--max-pages 5000`. |
 
