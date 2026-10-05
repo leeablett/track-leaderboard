@@ -2,9 +2,9 @@
 """Scrape the VFM leaderboard (all pages) and store each run as a snapshot in SQLite.
 
 Usage:
-    python scraper.py --once              # scrape once and exit (use with cron)
-    python scraper.py --loop 120          # scrape every 120 seconds until stopped
-    python scraper.py --once --browser    # use a real browser (JavaScript sites, firewalls)
+    python scraper.py                     # scrape every 2 minutes until stopped (Ctrl+C)
+    python scraper.py --once              # scrape once and exit (a test run, or for cron)
+    python scraper.py --once -v           # same, showing every page it reads
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -293,13 +294,14 @@ NEXT_JS = r"""({ want, custom }) => {
   const PAGER = /pagina|pager|page-nav|pages\b|paging/i;
   const cls = e => [typeof e.className === 'string' ? e.className : '', e.id || '',
                     e.parentElement && typeof e.parentElement.className === 'string' ? e.parentElement.className : ''].join(' ');
-  const label = e => ((e.innerText || '').trim() || e.getAttribute('aria-label') || e.getAttribute('title') || '').replace(/\s+/g, ' ');
+  const label = e => ((e.tagName === 'INPUT' ? (e.value || '') : (e.innerText || '').trim()) ||
+                      e.getAttribute('aria-label') || e.getAttribute('title') || e.getAttribute('alt') || '').replace(/\s+/g, ' ');
   const norm = t => t.replace(/»/g, '>>').replace(/«/g, '<<').replace(/›/g, '>').replace(/‹/g, '<').replace(/\s+/g, '').toLowerCase();
   const visible = e => { const r = e.getBoundingClientRect(), st = getComputedStyle(e);
                          return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
   const disabled = e => e.disabled || e.getAttribute('aria-disabled') === 'true' ||
                         /\bdisabled\b/i.test(cls(e)) || !!e.closest('[disabled], [aria-disabled="true"]');
-  const els = [...document.querySelectorAll('a, button, [role=button], [role=link], [onclick]')]
+  const els = [...document.querySelectorAll('a, button, input[type=submit], input[type=button], input[type=image], [role=button], [role=link], [onclick]')]
                 .filter(e => !e.closest('table') && visible(e));
   // The leaderboard table: the biggest one.
   const table = [...document.querySelectorAll('table')].sort((a, b) => b.rows.length - a.rows.length)[0];
@@ -310,8 +312,10 @@ NEXT_JS = r"""({ want, custom }) => {
     for (let i = 0; node && i < 4; i++, node = node.parentElement) {
       if (table && node.contains(table)) return false;  // gone too far up: that's the whole page
       if (PAGER.test((typeof node.className === 'string' ? node.className : '') + ' ' + (node.id || '') + ' ' + (node.getAttribute('aria-label') || ''))) return true;
-      const nums = [...node.querySelectorAll('a, button, [role=button]')].filter(x => /^\d+$/.test(label(x)));
+      const nums = [...node.querySelectorAll('a, button, input, [role=button]')].filter(x => /^\d+$/.test(label(x)));
       if (nums.length >= 2) return true;
+      const text = (node.innerText || '').trim();  // a small bar like "<<  Page 2  >>"
+      if (text.length < 80 && /\bpage\s*\d+/i.test(text)) return true;
     }
     return false;
   };
@@ -442,7 +446,7 @@ class BrowserPager:
         log.debug("page %d -> %d via %s", page_no, page_no + 1, found["how"])
         before = self.page.evaluate(TABLE_STATE_JS)
         self.clicked = True
-        self.page.locator("[data-lb-next]").first.click()
+        self._click_next()
         # Wait until the table changes (new rows, more rows, or replaced while loading).
         # If it doesn't, the repeated-rows check in scrape() asks for a retry.
         self._wait_for_change(before, 20_000)
@@ -456,20 +460,38 @@ class BrowserPager:
             log.debug("pagination controls seen: %s", "; ".join(found.get("candidates") or []) or "none")
         return found
 
-    def _wait_for_change(self, before: str, timeout_ms: int) -> bool:
-        from playwright.sync_api import Error as PWError
+    def _click_next(self):
+        # Mark the current document. Form buttons (like "<<" / ">>") reload the whole page;
+        # the new page won't carry the mark, which tells _wait_for_change it has arrived.
+        self.page.evaluate("document.documentElement.dataset.lbOld = '1'")
+        self.page.locator("[data-lb-next]").first.click()
 
-        try:
-            self.page.wait_for_function(f"prev => ({TABLE_STATE_JS})() !== prev", arg=before, timeout=timeout_ms)
-            return True
-        except PWError:
-            return False
+    def _wait_for_change(self, before: str, timeout_ms: int, reloaded: bool = True) -> bool:
+        """Wait until the table differs from `before` (or, if `reloaded`, a new page has loaded)."""
+        from playwright.sync_api import Error as PWError, TimeoutError as PWTimeout
+
+        deadline = time.monotonic() + timeout_ms / 1000
+        check = (f"([prev, reloaded]) => (reloaded && !document.documentElement.dataset.lbOld) "
+                 f"|| ({TABLE_STATE_JS})() !== prev")
+        while (left := deadline - time.monotonic()) > 0:
+            try:
+                self.page.wait_for_function(check, arg=[before, reloaded], timeout=left * 1000)
+                return True
+            except PWTimeout:
+                return False
+            except PWError:
+                # The page navigated while we were checking: wait for the new one, then re-check.
+                try:
+                    self.page.wait_for_load_state("domcontentloaded", timeout=max(1, left * 1000))
+                except PWError:
+                    pass
+        return False
 
     def retry(self, page_no: int) -> str | None:
         """Page `page_no` showed only rows we already have. It may still be loading, or the
         click may not have registered: wait a little longer, then click Next once more."""
         before = self.page.evaluate(TABLE_STATE_JS)
-        if self._wait_for_change(before, 10_000):
+        if self._wait_for_change(before, 10_000, reloaded=False):
             log.info("page %d was slow to load; read it again", page_no)
             self._settle()
             return self.page.content()
@@ -477,7 +499,7 @@ class BrowserPager:
         if found["action"] != "click":
             return None
         log.info("page %d didn't change after clicking; clicking %s again", page_no, found["how"])
-        self.page.locator("[data-lb-next]").first.click()
+        self._click_next()
         if not self._wait_for_change(before, 10_000):
             return None
         self._settle()
@@ -636,6 +658,11 @@ def run_once(args) -> bool:
         sid = store(conn, scraped_at, entries, pages)
         log.info("snapshot %d: %d rows from %d page(s)", sid, len(entries), pages)
         return True
+    except KeyboardInterrupt:
+        # Ctrl+C mid-scrape: the browser connection is already cut, and closing it politely
+        # would hang. Leave it; the browser exits with this program.
+        pager = None
+        raise
     except Exception as exc:  # record failures so gaps in the data are explainable
         store(conn, scraped_at, [], 0, error=str(exc))
         log.error("scrape failed: %s", exc)
@@ -649,15 +676,17 @@ def run_once(args) -> bool:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = p.add_mutually_exclusive_group()
-    mode.add_argument("--once", action="store_true", help="scrape once and exit (default)")
-    mode.add_argument("--loop", type=int, metavar="SECONDS", help="scrape repeatedly every SECONDS")
+    mode.add_argument("--once", action="store_true", help="scrape once and exit")
+    mode.add_argument("--loop", type=int, metavar="SECONDS", default=120,
+                      help="scrape repeatedly every SECONDS (default: every 120 seconds)")
     p.add_argument("--url", default=DEFAULT_URL)
     p.add_argument("--db", type=Path, default=DEFAULT_DB)
     p.add_argument("--max-pages", type=int, default=1000, help="safety limit on pages per run")
     p.add_argument("--page-delay", type=float, default=0.5, help="seconds between page requests")
-    p.add_argument("--browser", action="store_true",
-                   help="use a real Chromium browser (needed if the site blocks plain requests "
-                        "or draws the leaderboard with JavaScript)")
+    p.add_argument("--browser", action="store_true", default=True,
+                   help="use a real browser (the default; this site needs it)")
+    p.add_argument("--no-browser", dest="browser", action="store_false",
+                   help="use plain HTTP requests instead of a browser")
     p.add_argument("--headed", action="store_true", help="with --browser: show the browser window")
     p.add_argument("--browser-channel", default="auto", choices=["auto", *BrowserPager.CHANNELS],
                    help="with --browser: which browser to use (default: Playwright's Chromium if "
@@ -676,18 +705,18 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    if not args.loop:
-        return 0 if run_once(args) else 1
-
-    log.info("scraping %s every %ds (Ctrl+C to stop)", args.url, args.loop)
     try:
+        if args.once:
+            return 0 if run_once(args) else 1
+        log.info("scraping %s every %ds (Ctrl+C to stop)", args.url, args.loop)
         while True:
             started = time.monotonic()
             run_once(args)
             time.sleep(max(0.0, args.loop - (time.monotonic() - started)))
     except KeyboardInterrupt:
         log.info("stopped")
-    return 0
+        logging.shutdown()
+        os._exit(0)  # don't wait on a browser that was interrupted mid-page
 
 
 if __name__ == "__main__":

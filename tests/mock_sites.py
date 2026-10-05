@@ -3,7 +3,7 @@
 Used by run_pagination_tests.py. Each style has 7 pages of 5 rows (\"many\" has 250 pages)."""
 import http.server, json, urllib.parse, time
 PER = 5
-MODES = {"decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
+MODES = {"formpost", "decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
 def pages_for(mode): return 250 if mode == "many" else 3 if mode in ("veryslow", "lostclick") else 7
 ROW = "r => `<tr><td>${r.rank}</td><td>${r.name}</td><td>${r.score}</td></tr>`"
 TABLE = "rows => '<table><thead><tr><th>Rank</th><th>Player</th><th>Score</th></tr></thead><tbody>' + rows.map(" + ROW + ").join('') + '</tbody></table>'"
@@ -51,6 +51,19 @@ async function go(n, delay=0, blank=false, append=false) {{
 go(1);
 </script></body></html>"""
 
+def form_page(p, n=7):
+    """Like the real site: "<<  Page N  >>" form buttons above the table; each click POSTs the
+    form and reloads the page. Addresses are only partly honoured: ?page=2 works, ?page=3+ shows page 1."""
+    rows = "".join(f"<tr><td><div class=box>Player{r:03d}</div></td><td>{1600-r}</td><td>{r % 9}</td><td>{r % 4}</td><td>0</td></tr>"
+                   for r in range((p-1)*PER+1, p*PER+1))
+    nxt_dis = " disabled" if p >= n else ""
+    prv_dis = " disabled" if p <= 1 else ""
+    return f"""<html><head><meta charset=utf-8></head><body style="background:#021">
+<form method=post><input type=hidden name=page value={p}>
+<input type=submit name=nav value="&lt;&lt;"{prv_dis}> Page {p} <input type=submit name=nav value="&gt;&gt;"{nxt_dis}></form>
+<table><tr><th>Player</th><th>Rating</th><th>Win</th><th>Loss</th><th>Draw</th></tr>{rows}</table></body></html>"""
+
+
 def server_rendered(p):
     rows = "" if p > 7 else "".join(f"<tr><td>{r}</td><td>Player {r}</td><td>{1000-r}</td></tr>" for r in range((p-1)*PER+1, p*PER+1))
     nxt = f'<a class="page-link" href="?page={p+1}">Next ›</a>' if p < 7 else '<span class="page-link disabled">Next ›</span>'
@@ -67,9 +80,20 @@ class H(http.server.BaseHTTPRequestHandler):
             mode = u.path.strip("/").split("/")[0]
             if mode not in MODES:
                 self.send_response(404); self.end_headers(); return
-            body = (server_rendered(int(q.get("page", ["1"])[0])) if mode == "ssr_next_text" else shell(mode)).encode()
+            if mode == "formpost":
+                asked = int(q.get("page", ["1"])[0])
+                body = form_page(asked if asked <= 2 else 1).encode()
+            else:
+                body = (server_rendered(int(q.get("page", ["1"])[0])) if mode == "ssr_next_text" else shell(mode)).encode()
             ct = "text/html; charset=utf-8"
         self.send_response(200); self.send_header("Content-Type", ct); self.end_headers(); self.wfile.write(body)
+    def do_POST(self):
+        form = urllib.parse.parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
+        p = int(form.get("page", ["1"])[0])
+        p = min(7, p + 1) if form.get("nav", [""])[0] == ">>" else max(1, p - 1)
+        body = form_page(p).encode()
+        self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(body)
+
     def log_message(self, *a): pass
 
 

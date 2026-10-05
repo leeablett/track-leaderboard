@@ -105,24 +105,33 @@ Run the test in step 4 to check.
 ## 4. Test run
 
 ```
-python scraper.py --once --browser -v
+python scraper.py --once -v
 ```
 
-✅ You should see a line like `INFO snapshot 1: 250 rows from 5 page(s)`. Check the page
-count matches the website.
+✅ You should see one line per page, then a summary, like:
+
+```
+page 1 -> 2 via Next label: input ">>" [in pagination]
+```
+
+```
+INFO read 12 page(s), 300 rows; stopped because the Next label is disabled (last page)
+```
+
+Check the page count matches the website (click `>>` until the last page to count).
 
 To watch the browser while it works, add `--headed`:
 
 ```
-python scraper.py --once --browser --headed
+python scraper.py --once --headed
 ```
 
 ## 5. Run it every 2 minutes
 
-**Option A: in a window.** Runs until you close the window.
+**Option A: in a window.** Runs until you press **Ctrl+C** or close the window.
 
 ```
-python scraper.py --loop 120 --browser
+python scraper.py
 ```
 
 **Option B: automatically in the background.** Starts whenever you log in.
@@ -138,7 +147,7 @@ python scraper.py --loop 120 --browser
 3. **Name:** `Track leaderboard`. **Trigger:** **When I log on**. **Action:** **Start a program**.
 4. Fill in:
    - **Program/script:** the path from step 1 with `pythonw.exe` at the end, e.g. `C:\Users\YOURNAME\AppData\Local\Programs\Python\Python312\pythonw.exe`
-   - **Add arguments:** `scraper.py --loop 120 --browser`
+   - **Add arguments:** `scraper.py`
    - **Start in:** your scraper folder, e.g. `D:\github\track-leaderboard`
 5. Tick **Open the Properties dialog…** and click **Finish**. On the **Settings** tab, **untick** *Stop the task if it runs longer than…* and click **OK**.
 6. To start it now, right-click the task and choose **Run**.
@@ -337,7 +346,7 @@ the task and choose **Run**.
 
 | Process | Start | Stop |
 |---|---|---|
-| Scraper (collects data) | `python scraper.py --loop 120 --browser`, or the Task Scheduler task from step 5 | **Ctrl+C** in its window, or right-click its task → **End** |
+| Scraper (collects data) | `python scraper.py`, or the Task Scheduler task from step 5 | **Ctrl+C** in its window, or right-click its task → **End** |
 | Dashboard (shows data) | `Start-Process pythonw dashboard.py`, or the Task Scheduler task above | `python dashboard.py --stop` |
 
 ### Demo data
@@ -433,7 +442,7 @@ never touched by an update.
 5. Check it still works:
 
    ```
-   python scraper.py --once --browser -v
+   python scraper.py --once -v
    ```
 
 6. Start the scraper and dashboard again as usual.
@@ -452,9 +461,10 @@ never touched by an update.
 | Option | What it does |
 |---|---|
 | `--once` | Scrape once and stop |
-| `--loop 120` | Scrape every 120 seconds until stopped |
-| `--browser` | Use a real browser (needed for this site) |
-| `--headed` | Show the browser window (with `--browser`) |
+| *(none)* | Scrape every 2 minutes until you press **Ctrl+C** |
+| `--loop 300` | Scrape every 300 seconds instead |
+| `--no-browser` | Use plain web requests instead of a browser (this site needs the browser, which is the default) |
+| `--headed` | Show the browser window while it works |
 | `--browser-channel msedge` | Which browser to use: `auto` (default), `chromium`, `msedge` or `chrome` |
 | `--page-delay 0.5` | Seconds to wait between pages |
 | `--max-pages 1000` | Safety limit on pages per run (a warning is logged if it's reached) |
@@ -468,18 +478,18 @@ never touched by an update.
 | What you see | What to do |
 |---|---|
 | `'python' is not recognized` | Python isn't on PATH. Re-run the Python installer, choose **Modify**, tick **Add Python to environment variables**, then open a new window. |
-| Typing `python` opens the Microsoft Store | Use `py` in place of `python`, e.g. `py scraper.py --once --browser`. |
+| Typing `python` opens the Microsoft Store | Use `py` in place of `python`, e.g. `py scraper.py --once`. |
 | `No module named 'bs4'` or `'playwright'` | Run `python -m pip install -r requirements.txt` again. |
-| `Failed to install browsers` / `Failed to download Chrome for Testing` | Skip that step; the scraper uses Microsoft Edge instead. Check with `python scraper.py --once --browser -v`; the log should say `using browser: msedge`. |
+| `Failed to install browsers` / `Failed to download Chrome for Testing` | Skip that step; the scraper uses Microsoft Edge instead. Check with `python scraper.py --once -v`; the log should say `using browser: msedge`. |
 | `couldn't start a browser` | No usable browser was found. Install or update Microsoft Edge (or Google Chrome), or retry `python -m playwright install chromium` on a different network. |
 | You want a particular browser | Add `--browser-channel msedge` (Edge), `--browser-channel chrome` (Google Chrome) or `--browser-channel chromium` (Playwright's own). |
 | `>>` appears at the start of the line in PowerShell | PowerShell is waiting for more input; nothing has run. Press **Ctrl+C**, then paste one command at a time. |
-| `HTTP 406: the site's firewall blocked the request` | Add `--browser` to the command. |
+| `HTTP 406: the site's firewall blocked the request` | You used `--no-browser`. Leave it off; the browser is the default. |
 | `the site's firewall blocked the browser too` | Try adding `--headed`. If it's still blocked, the site doesn't allow automated access; contact the site owner. |
 | `no leaderboard <table> found` | The page was saved to `data\debug\page_1.html`. Send that file over so the scraper can be adjusted. |
-| Not all pages are read | Every run logs a line like `read 12 page(s), 300 rows; stopped because the Next label is disabled (last page)`. Check the page count matches the website. If it doesn't, run `python scraper.py --once --browser --diagnose`, then send the log and the files in `data\debug` (a screenshot and HTML of each page). |
+| Not all pages are read | Every run logs a line like `read 12 page(s), 300 rows; stopped because the Next label is disabled (last page)`. Check the page count matches the website. If it doesn't, run `python scraper.py --once --diagnose`, then send the log and the files in `data\debug` (a screenshot and HTML of each page). |
 | `stopped because page N only repeated rows already read (the same rows as page X)` | The scraper thought page N showed rows it had already saved, which normally means the end of the leaderboard. It now waits longer and clicks Next again before deciding this, so update first (`git pull`). If it still stops early: **X = N−1** means the page didn't change after clicking (too slow, or the click didn't register); **X = 1** means the site jumped back to page 1. Run with `--diagnose` and send the log and `data\debug` files. |
-| It clicks the wrong control (e.g. `the same rows as page 1`) | Tell it which control goes to the next page. For this site that's the `>>` arrow: `python scraper.py --once --browser --next ">>"`. Use the same `--next ">>"` on your `--loop` command and in Task Scheduler's **Add arguments**. With `-v`, each page's log line shows what was clicked (e.g. `page 2 -> 3 via Next label: a ">>" [in pagination]`). |
+| It clicks the wrong control (e.g. `the same rows as page 1`) | Tell it which control goes to the next page. For this site that's the `>>` arrow: `python scraper.py --once --next ">>"`. Use the same `--next ">>"` on your `--loop` command and in Task Scheduler's **Add arguments**. With `-v`, each page's log line shows what was clicked (e.g. `page 2 -> 3 via Next label: a ">>" [in pagination]`). |
 | `WARNING the site says there are N pages but only M were read` | The scraper saw the site's own page count ("Page 1 of 37" or "1–25 of 912") and read fewer. Run with `--diagnose` as above and send the results. |
 | `WARNING stopped at --max-pages` | The leaderboard has more pages than the safety limit. Add e.g. `--max-pages 5000`. |
 
