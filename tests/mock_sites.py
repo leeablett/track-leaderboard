@@ -3,7 +3,7 @@
 Used by run_pagination_tests.py. Each style has 7 pages of 5 rows (\"many\" has 250 pages)."""
 import http.server, json, urllib.parse, time
 PER = 5
-MODES = {"formpost", "decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
+MODES = {"divpager", "blazor", "formpost", "decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
 def pages_for(mode): return 250 if mode == "many" else 3 if mode in ("veryslow", "lostclick") else 7
 ROW = "r => `<tr><td>${r.rank}</td><td>${r.name}</td><td>${r.score}</td></tr>`"
 TABLE = "rows => '<table><thead><tr><th>Rank</th><th>Player</th><th>Score</th></tr></thead><tbody>' + rows.map(" + ROW + ").join('') + '</tbody></table>'"
@@ -23,6 +23,10 @@ def shell(mode):
         "slow_keep": "pager.innerHTML = `<button id=nxt ${p>=N?'disabled':''}>Next</button>`; if (p<N) nxt.onclick = () => go(p+1, 3000, false);",
         # "Load more" appends rows to the same table
         "loadmore": "pager.innerHTML = p<N ? `<button id=more>Load more</button>` : ''; if (p<N) more.onclick = () => go(p+1, 0, false, true);",
+        # "<<  Page N  >>" made of plain <div>s (clicks wired up by script, no button/link) in a
+        # small layout table above the leaderboard; elsewhere a "1 2 3" group of btn-primary
+        # buttons (not page numbers) that reloads page 1
+        "divpager": "roundbar.innerHTML = `<div class=btn-group>${[1,2,3].map(i => `<button class='btn btn-primary'>${i}</button>`).join('')}</div>`; roundbar.querySelectorAll('button').forEach(b => b.onclick = () => go(1)); pager.innerHTML = `<table class=nav><tr><td><div class=navbtn id=pv>&lt;&lt;</div></td><td>Page ${p}</td><td><div class=navbtn id=nx style='cursor:pointer'>&gt;&gt;</div></td></tr></table>`; if (p>1) pv.addEventListener('click', () => go(p-1)); if (p<N) nx.addEventListener('click', () => go(p+1));",
         # ">>" in the pagination bar is next; from page 2 a "›" arrow ABOVE the table (e.g. a
         # round/season switcher) also appears, and clicking it reloads page 1
         "decoy": "roundbar.innerHTML = p>=2 ? `<button id=rnd>›</button> Round 5` : 'Round 5'; if (p>=2) rnd.onclick = () => go(1); let h=''; for (let i=1;i<=Math.min(3,N);i++) h+=`<a href='#' class='pg' data-p=${i}>${i}</a> `; h+=`<span>…</span> <a href='#' id=nx ${p>=N?'disabled':''}>&gt;&gt;</a>`; pager.innerHTML=h; pager.querySelectorAll('.pg').forEach(b=>b.onclick=e=>{e.preventDefault();go(+b.dataset.p)}); if (p<N) nx.onclick=e=>{e.preventDefault();go(p+1)};",
@@ -50,6 +54,32 @@ async function go(n, delay=0, blank=false, append=false) {{
 }}
 go(1);
 </script></body></html>"""
+
+BLAZOR = """<html><head><meta charset=utf-8></head><body style="background:#021;color:#9c6">
+<div class=btn-group><button class="btn btn-primary">1</button><button class="btn btn-primary">2</button><button class="btn btn-primary">3</button></div>
+<table class=board><tbody id=board></tbody></table>
+<script>
+// Copied from the real site's markup: the pager is the first row of the leaderboard table,
+// "<<" / ">>" are <button class="player-name"> like the player names, the headings are plain
+// <td>s, and rows are swapped in place (Blazor). On the last page ">>" stays enabled and does nothing.
+let p = 1; const N = 7;
+async function go(n) {
+  if (n < 1 || n > N) return;
+  const d = await (await fetch('/api?page=' + n)).json(); p = n;
+  board.innerHTML =
+    `<tr b-gszbhyv0cx=""><td class="page-selector" b-gszbhyv0cx=""><button class="player-name" style="width:50px" b-gszbhyv0cx="">&lt;&lt;</button></td><!--!-->
+     <td class="page-selector" b-gszbhyv0cx="">Page ${p}</td><!--!-->
+     <td class="page-selector" b-gszbhyv0cx=""><button class="player-name" style="width:50px" b-gszbhyv0cx="">&gt;&gt;</button></td></tr>` +
+    `<tr><td>Player</td><td>Rating</td><td>Win</td><td>Loss</td><td>Draw</td></tr>` +
+    d.rows.map(r => `<tr><td><button class="player-name">${r.name.replace(' ', '')}</button></td><td>${r.score}</td><td>${r.rank % 9}</td><td>${r.rank % 4}</td><td>0</td></tr>`).join('');
+  const b = board.querySelectorAll('.page-selector button');
+  b[0].onclick = () => go(p - 1); b[1].onclick = () => go(p + 1);
+}
+// the "1 2 3" group elsewhere on the page is not pagination: it reloads page 1
+document.querySelectorAll('.btn-group button').forEach(x => x.onclick = () => go(1));
+go(1);
+</script></body></html>"""
+
 
 def form_page(p, n=7):
     """Like the real site: "<<  Page N  >>" form buttons above the table; each click POSTs the
@@ -80,7 +110,9 @@ class H(http.server.BaseHTTPRequestHandler):
             mode = u.path.strip("/").split("/")[0]
             if mode not in MODES:
                 self.send_response(404); self.end_headers(); return
-            if mode == "formpost":
+            if mode == "blazor":
+                body = BLAZOR.encode()
+            elif mode == "formpost":
                 asked = int(q.get("page", ["1"])[0])
                 body = form_page(asked if asked <= 2 else 1).encode()
             else:

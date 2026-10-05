@@ -97,13 +97,40 @@ def find_table(soup: BeautifulSoup, want_headers: list[str] | None = None):
     return max(tables, key=lambda t: (bool(parse_table(t)[0]), len(t.find_all("tr"))))
 
 
+def is_pager_row(values: list[str]) -> bool:
+    """A "<<  Page 2  >>" row inside the table rather than a player."""
+    return (len(values) <= 5 and bool(re.search(r"\bpage\s*\d+", " ".join(values), re.I))
+            and any(re.fullmatch(r"[<>«»‹›]+", v) for v in values))
+
+
+def find_header_row(rows):
+    """The column-headings row: a row of <th> cells, or (if the site uses ordinary cells) the
+    first row of all-text cells followed by rows containing numbers. Pager rows are skipped."""
+    first = []
+    for tr in rows[:5]:
+        cells = tr.find_all(["td", "th"])
+        values = [c.get_text(" ", strip=True) for c in cells]
+        if not cells or not any(values) or is_pager_row(values):
+            continue
+        if tr.find("th") and not tr.find("td"):
+            return tr
+        first.append((tr, values))
+    if first:
+        tr, values = first[0]
+        looks_like_text = all(v and not re.search(r"\d", v) and len(v) <= 30 for v in values)
+        numbers_below = any(re.search(r"\d", " ".join(v)) for _, v in first[1:])
+        if len(values) >= 2 and looks_like_text and numbers_below:
+            return tr
+    return None
+
+
 def parse_table(table) -> tuple[list[str], list[dict[str, str]]]:
     rows = table.find_all("tr")
     headers: list[str] = []
     head = table.find("thead")
     header_row = head.find("tr") if head else None
-    if header_row is None and rows and rows[0].find("th") and not rows[0].find("td"):
-        header_row = rows[0]
+    if header_row is None:
+        header_row = find_header_row(rows)
     if header_row is not None:
         headers = [slug(c.get_text(" ", strip=True)) for c in header_row.find_all(["th", "td"])]
 
@@ -126,6 +153,8 @@ def parse_table(table) -> tuple[list[str], list[dict[str, str]]]:
         values = [c.get_text(" ", strip=True) for c in cells]
         if not any(values):
             continue
+        if is_pager_row(values):
+            continue  # a pager row ("<<  Page 2  >>") inside the table, not a player
         record = {}
         for i, v in enumerate(values):
             key = headers[i] if i < len(headers) and headers[i] else f"col_{i + 1}"
@@ -276,6 +305,9 @@ class HttpPager:
     def retry(self, page_no: int) -> str | None:
         return None  # a plain request can't be "still loading"
 
+    def log_controls(self):
+        pass
+
     def screenshot(self, path: Path):
         pass
 
@@ -291,7 +323,7 @@ NEXT_JS = r"""({ want, custom }) => {
   const CLASS = /(^|[-_\s])next($|[-_\s])/i;
   const ICON = /(angles?-right|double-right|chevron-right|angle-right|arrow-right|caret-right|arrow_forward|navigate_next|forward|next)/i;
   const MORE = /^(load|show|view|see)\s+more\b.{0,20}$/i;
-  const PAGER = /pagina|pager|page-nav|pages\b|paging/i;
+  const PAGER = /pagina|pager|page-?nav|page-?select|pages\b|paging/i;
   const cls = e => [typeof e.className === 'string' ? e.className : '', e.id || '',
                     e.parentElement && typeof e.parentElement.className === 'string' ? e.parentElement.className : ''].join(' ');
   const label = e => ((e.tagName === 'INPUT' ? (e.value || '') : (e.innerText || '').trim()) ||
@@ -301,8 +333,17 @@ NEXT_JS = r"""({ want, custom }) => {
                          return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
   const disabled = e => e.disabled || e.getAttribute('aria-disabled') === 'true' ||
                         /\bdisabled\b/i.test(cls(e)) || !!e.closest('[disabled], [aria-disabled="true"]');
-  const els = [...document.querySelectorAll('a, button, input[type=submit], input[type=button], input[type=image], [role=button], [role=link], [onclick]')]
-                .filter(e => !e.closest('table') && visible(e));
+  // Candidates: real links/buttons, plus any element whose own text is an arrow / "Next" /
+  // "Load more" (sites often make a plain <div> or <span> clickable with script). Controls
+  // inside tables count too: older sites lay out their pager with one.
+  const CLICKABLE = 'a, button, input[type=submit], input[type=button], input[type=image], [role=button], [role=link], [onclick], [tabindex]';
+  const pointer = e => { for (let n = e, i = 0; n && i < 3; i++, n = n.parentElement)
+                           if (getComputedStyle(n).cursor === 'pointer') return n;
+                         return e; };
+  const lift = e => e.closest(CLICKABLE) || pointer(e);
+  const leaves = [...document.body.querySelectorAll('*')].filter(e => e.children.length === 0 && visible(e) &&
+                   (LABEL.test(label(e)) || MORE.test(label(e)) || (custom && norm(label(e)) === norm(custom))));
+  const els = [...new Set([...document.querySelectorAll(CLICKABLE), ...leaves.map(lift)])].filter(visible);
   // The leaderboard table: the biggest one.
   const table = [...document.querySelectorAll('table')].sort((a, b) => b.rows.length - a.rows.length)[0];
   const tb = table ? table.getBoundingClientRect() : null;
@@ -337,11 +378,12 @@ NEXT_JS = r"""({ want, custom }) => {
       ['Next label', e => LABEL.test(label(e)), true],
       ["'next' class", e => CLASS.test(cls(e)), true],
       ['next arrow icon', e => !/\w/.test(label(e)) && ICON.test(e.innerHTML) && inPager(e), true],
-      ['page number ' + want, e => label(e) === String(want), false],
+      ['page number ' + want, e => label(e) === String(want) && inPager(e), false],
       ['Load more button', e => MORE.test(label(e)), true],
     ];
   }
-  const candidates = els.filter(e => inPager(e) || LABEL.test(label(e)) || CLASS.test(cls(e))).slice(0, 25).map(describe);
+  const candidates = els.filter(e => inPager(e) || LABEL.test(label(e)) || CLASS.test(cls(e)) || /^\d+$/.test(label(e)))
+                        .slice(0, 25).map(describe);
   for (const [how, test, endIfDisabled] of tiers) {
     const found = els.filter(test);
     if (!found.length) continue;
@@ -449,7 +491,7 @@ class BrowserPager:
         self._click_next()
         # Wait until the table changes (new rows, more rows, or replaced while loading).
         # If it doesn't, the repeated-rows check in scrape() asks for a retry.
-        self._wait_for_change(before, 20_000)
+        self._wait_for_change(before, 10_000)
         self._settle()
         return self.page.content()
 
@@ -504,6 +546,14 @@ class BrowserPager:
             return None
         self._settle()
         return self.page.content()
+
+    def log_controls(self):
+        """Say which pagination controls are on the page (used when paging stops unexpectedly)."""
+        try:
+            found = self.page.evaluate(NEXT_JS, {"want": 0, "custom": self.next_control})
+            log.info("pagination controls on the page: %s", "; ".join(found.get("candidates") or []) or "none found")
+        except Exception:
+            pass
 
     def screenshot(self, path: Path):
         self.page.screenshot(path=str(path), full_page=True)
@@ -575,8 +625,13 @@ def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False
                     html = again
                     continue
             same_as = sorted({seen_rows[row_key(r)] for r in records})
-            reason = (f"page {page_no} only repeated rows already read "
-                      f"(the same rows as page {', '.join(map(str, same_as))})")
+            if same_as == [page_no - 1]:
+                # Clicking Next (twice) left the page as it was: some sites keep Next enabled
+                # on the last page.
+                reason = f"Next no longer changes the page, so page {page_no - 1} is the last"
+            else:
+                reason = (f"page {page_no} only repeated rows already read "
+                          f"(the same rows as page {', '.join(map(str, same_as))})")
             break
         retried = False
         for r in new:
@@ -606,6 +661,8 @@ def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False
             break
 
     log.info("read %d page(s), %d rows; stopped because %s", pages, len(entries), reason or "done")
+    if "repeated rows" in reason or "no next-page control" in reason or "no control matching" in reason:
+        pager.log_controls()
     if exp_pages and pages < exp_pages:
         log.warning("the site says there are %d pages but only %d were read", exp_pages, pages)
     if exp_rows and len(entries) < exp_rows:
