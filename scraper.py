@@ -32,7 +32,6 @@ DEBUG_DIR = Path(__file__).parent / "data" / "debug"
 RANK_KEYS = ("rank", "position", "pos", "place", "#", "no")
 NAME_KEYS = ("name", "player", "user", "username", "driver", "team", "manager", "club")
 SCORE_KEYS = ("score", "points", "pts", "total", "rating", "value", "time")
-NEXT_TEXT = {"next", "next page", "›", "»", ">", "→"}
 
 log = logging.getLogger("scraper")
 
@@ -144,24 +143,67 @@ def pick(record: dict[str, str], keys: tuple[str, ...]) -> str | None:
     return None
 
 
-def next_page_url(soup: BeautifulSoup, current_url: str, page_no: int) -> str | None:
-    """Find the next page link; fall back to incrementing a ?page= query parameter."""
-    link = soup.find("a", rel=lambda r: r and "next" in r)
-    if link is None:
-        for a in soup.find_all("a", href=True):
-            label = (a.get_text(" ", strip=True) or a.get("aria-label", "")).strip().lower()
-            if label in NEXT_TEXT or a.get("aria-label", "").lower().startswith("next"):
-                link = a
-                break
-    if link is not None and link.get("href") and not link.get("href").startswith(("#", "javascript")):
-        classes = " ".join(link.get("class", [])) + " " + " ".join(link.parent.get("class", []))
-        if "disabled" not in classes:
-            return urljoin(current_url, link["href"])
+# How a "next page" control is recognised, in order of preference:
+#   1. rel="next"
+#   2. its label: "Next", "Next »", "Next page ›", "Go to next page", or just an arrow (›, », >, →)
+#   3. "next" in its class or id (e.g. pagination-next, page-next)
+#   4. a link/button labelled with the next page number (numbered pagination: 1 2 3 … 9)
+#   5. "Load more" / "Show more" (browser mode only)
+# A matching control that is disabled means we're on the last page.
+NEXT_LABEL = re.compile(r"(go to |show |view )?(the )?next( page)?\W*|[›»>→⟩❯▶]+", re.I)
+NEXT_CLASS = re.compile(r"(^|[-_\s])next($|[-_\s])", re.I)
+MORE_LABEL = re.compile(r"(load|show|view|see)\s+more\b.{0,20}", re.I)
+
+
+def _label(el) -> str:
+    return " ".join((el.get_text(" ", strip=True) or el.get("aria-label") or el.get("title") or "").split())
+
+
+def _is_disabled(el) -> bool:
+    if el.has_attr("disabled") or el.get("aria-disabled") == "true":
+        return True
+    for node in (el, el.parent):
+        if node is not None and "disabled" in " ".join(node.get("class", [])).lower():
+            return True
+    return False
+
+
+def next_page_url(soup: BeautifulSoup, current_url: str, page_no: int) -> tuple[str | None, str]:
+    """Return (url of the next page or None, how it was found / why we stopped)."""
+    controls = [el for el in soup.find_all(["a", "button", "span", "li"]) if not el.find_parent("table")]
+
+    def classes(el):
+        return " ".join(el.get("class", []) + [el.get("id", "")] +
+                        (el.parent.get("class", []) if el.parent else []))
+
+    tiers = [
+        ("rel=next link", lambda el: el.name == "a" and "next" in (el.get("rel") or [])),
+        ("Next label", lambda el: el.name in ("a", "button", "span") and bool(NEXT_LABEL.fullmatch(_label(el)))),
+        ("'next' class", lambda el: el.name in ("a", "button", "li") and bool(NEXT_CLASS.search(classes(el)))),
+    ]
+    for how, test in tiers:
+        found = [el for el in controls if test(el)]
+        if not found:
+            continue
+        el = found[0]
+        if el.name == "li":
+            el = el.find("a") or el
+        href = el.get("href") or ""
+        if _is_disabled(el) or not href or href.startswith(("#", "javascript")):
+            if _is_disabled(el) or el.name == "span":
+                return None, f"the {how} is disabled (last page)"
+            continue
+        return urljoin(current_url, href), how
+
+    want = str(page_no + 1)
+    for el in controls:
+        if el.name == "a" and _label(el) == want and el.get("href") and not el["href"].startswith(("#", "javascript")):
+            return urljoin(current_url, el["href"]), f"page number {want} link"
 
     parts = urlparse(current_url)
     query = parse_qs(parts.query)
     query["page"] = [str(page_no + 1)]
-    return urlunparse(parts._replace(query=urlencode(query, doseq=True)))
+    return urlunparse(parts._replace(query=urlencode(query, doseq=True))), "guessed ?page= in the address"
 
 
 # --------------------------------------------------------------------------- scraping
@@ -185,6 +227,8 @@ def fetch(session: requests.Session, url: str, retries: int = 3) -> str:
                     "try running with --browser"
                 )
             resp.raise_for_status()
+            if "charset" not in resp.headers.get("Content-Type", "").lower():
+                resp.encoding = resp.apparent_encoding  # else "›" in "Next ›" arrives garbled
             return resp.text
         except requests.RequestException as exc:
             status = exc.response.status_code if exc.response is not None else None
@@ -210,6 +254,7 @@ class HttpPager:
         self.session = make_session()
         self.url = None
         self.visited: set[str] = set()
+        self.stop_reason = ""
 
     def open(self, url: str) -> str:
         self.url = url
@@ -217,19 +262,63 @@ class HttpPager:
         return fetch(self.session, url)
 
     def next(self, soup: BeautifulSoup, page_no: int) -> str | None:
-        url = next_page_url(soup, self.url, page_no)
-        if not url or url in self.visited:
+        url, how = next_page_url(soup, self.url, page_no)
+        if not url:
+            self.stop_reason = how
             return None
+        if url in self.visited:
+            self.stop_reason = "the next-page link points to a page already read"
+            return None
+        log.debug("page %d -> %d via %s", page_no, page_no + 1, how)
         return self.open(url)
+
+    def screenshot(self, path: Path):
+        pass
 
     def close(self):
         self.session.close()
 
 
-NEXT_LABEL = re.compile(r"^\s*(next( page)?|›|»|>|→)\s*$", re.I)
-FIRST_ROW_JS = """() => {
-    const r = document.querySelector('table tbody tr') || document.querySelector('table tr:nth-child(2)');
-    return r ? r.innerText : null;
+# Browser-side version of the rules in next_page_url(). Marks the chosen control with
+# data-lb-next so Python can click it.
+NEXT_JS = r"""(want) => {
+  document.querySelectorAll('[data-lb-next]').forEach(e => e.removeAttribute('data-lb-next'));
+  const LABEL = /^(?:(?:go to |show |view )?(?:the )?next(?: page)?\W*|[›»>→⟩❯▶]+)$/i;
+  const CLASS = /(^|[-_\s])next($|[-_\s])/i;
+  const MORE = /^(load|show|view|see)\s+more\b.{0,20}$/i;
+  const cls = e => [typeof e.className === 'string' ? e.className : '', e.id || '',
+                    e.parentElement && typeof e.parentElement.className === 'string' ? e.parentElement.className : ''].join(' ');
+  const label = e => ((e.innerText || '').trim() || e.getAttribute('aria-label') || e.getAttribute('title') || '').replace(/\s+/g, ' ');
+  const visible = e => { const r = e.getBoundingClientRect(), st = getComputedStyle(e);
+                         return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
+  const disabled = e => e.disabled || e.getAttribute('aria-disabled') === 'true' ||
+                        /\bdisabled\b/i.test(cls(e)) || !!e.closest('[disabled], [aria-disabled="true"]');
+  const els = [...document.querySelectorAll('a, button, [role=button], [role=link]')]
+                .filter(e => !e.closest('table') && visible(e));
+  const tiers = [
+    ['rel=next link', e => (e.getAttribute('rel') || '').split(/\s+/).includes('next'), true],
+    ['Next label', e => LABEL.test(label(e)), true],
+    ["'next' class", e => CLASS.test(cls(e)), true],
+    ['page number ' + want, e => label(e) === String(want), false],
+    ['Load more button', e => MORE.test(label(e)), true],
+  ];
+  for (const [how, test, endIfDisabled] of tiers) {
+    const found = els.filter(test);
+    if (!found.length) continue;
+    const usable = found.find(e => !disabled(e));
+    if (!usable) { if (endIfDisabled) return { action: 'end', how: 'the ' + how + ' is disabled (last page)' }; continue; }
+    usable.setAttribute('data-lb-next', '1');
+    return { action: 'click', how: how + ' "' + label(usable).slice(0, 30) + '"' };
+  }
+  return { action: 'none' };
+}"""
+
+# A short fingerprint of the leaderboard table: row count plus first and last row.
+TABLE_STATE_JS = """() => {
+  const t = [...document.querySelectorAll('table')].sort((a, b) => b.rows.length - a.rows.length)[0];
+  if (!t) return '';
+  const rows = t.querySelectorAll('tbody tr').length ? t.querySelectorAll('tbody tr') : t.querySelectorAll('tr');
+  return rows.length + '|' + (rows[0] ? rows[0].innerText : '') + '|' + (rows.length ? rows[rows.length - 1].innerText : '');
 }"""
 
 
@@ -260,19 +349,23 @@ class BrowserPager:
                 "couldn't start a browser. Install Microsoft Edge or Google Chrome, or run "
                 "'python -m playwright install chromium'. Tried -> " + " | ".join(tried)
             )
-        self.page = self.browser.new_page()
+        self.page = self.browser.new_page(viewport={"width": 1366, "height": 900})
         self.status = None
         self.visited: set[str] = set()
-        self.clicked = False  # paging by clicking Next; a missing/disabled Next then means the end
+        self.clicked = False  # paging by clicking; no control found afterwards means the end
+        self.stop_reason = ""
 
     def _settle(self):
         from playwright.sync_api import Error as PWError
 
         try:
             self.page.wait_for_selector("table tr td", timeout=20_000)
-            self.page.wait_for_load_state("networkidle", timeout=10_000)
         except PWError:
-            pass  # no table (yet); the caller reports it
+            return  # no table (yet); the caller reports it
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=3_000)
+        except PWError:
+            pass  # sites that keep a connection open never go idle; the table is already there
 
     def open(self, url: str) -> str:
         self.visited.add(url)
@@ -284,68 +377,73 @@ class BrowserPager:
             raise RuntimeError(f"HTTP {self.status}: the site's firewall blocked the browser too")
         return html
 
-    def _next_control(self):
-        candidates = [
-            self.page.locator("a[rel~='next']"),
-            self.page.get_by_role("link", name=NEXT_LABEL),
-            self.page.get_by_role("button", name=NEXT_LABEL),
-        ]
-        for loc in candidates:
-            for i in range(loc.count()):
-                c = loc.nth(i)
-                if not (c.is_visible() and c.is_enabled()):
-                    continue
-                classes = (c.get_attribute("class") or "") + " " + (
-                    c.evaluate("e => e.parentElement ? e.parentElement.className : ''") or "")
-                if c.get_attribute("aria-disabled") == "true" or "disabled" in classes:
-                    continue
-                return c
-        return None
-
     def next(self, soup: BeautifulSoup, page_no: int) -> str | None:
         from playwright.sync_api import Error as PWError
 
-        control = self._next_control()
-        if control is None:
+        found = self.page.evaluate(NEXT_JS, page_no + 1)
+        if found["action"] == "end":
+            self.stop_reason = found["how"]
+            return None
+        if found["action"] == "none":
             if self.clicked:
+                self.stop_reason = f"no next-page control after page {page_no}"
                 return None
-            # No next button/link at all: fall back to ?page=N in the URL.
-            url = next_page_url(soup, self.page.url, page_no)
+            url, how = next_page_url(soup, self.page.url, page_no)
             if not url or url in self.visited:
+                self.stop_reason = how if not url else "no next-page control found"
                 return None
+            log.debug("page %d -> %d via %s", page_no, page_no + 1, how)
             return self.open(url)
 
-        before = self.page.evaluate(FIRST_ROW_JS)
+        log.debug("page %d -> %d via %s", page_no, page_no + 1, found["how"])
+        before = self.page.evaluate(TABLE_STATE_JS)
         self.clicked = True
-        control.click()
+        self.page.locator("[data-lb-next]").first.click()
         try:
-            # Wait until the table shows different rows (works for in-page and full-page navigation).
-            self.page.wait_for_function(
-                "prev => { const r = document.querySelector('table tbody tr') || "
-                "document.querySelector('table tr:nth-child(2)'); return !r || r.innerText !== prev; }",
-                arg=before, timeout=15_000,
-            )
+            # Wait until the table changes (new rows, more rows, or replaced while loading).
+            self.page.wait_for_function(f"prev => ({TABLE_STATE_JS})() !== prev", arg=before, timeout=20_000)
         except PWError:
-            pass  # unchanged rows are caught by the duplicate-page check
+            pass  # unchanged rows are caught by the repeated-rows check
         self._settle()
         return self.page.content()
+
+    def screenshot(self, path: Path):
+        self.page.screenshot(path=str(path), full_page=True)
 
     def close(self):
         self.browser.close()
         self._pw.stop()
 
 
-def scrape(pager, url: str, max_pages: int, delay: float) -> tuple[list[dict], int]:
+def row_key(rec: dict) -> str:
+    return json.dumps(rec, sort_keys=True, ensure_ascii=False)
+
+
+def expected_totals(soup: BeautifulSoup) -> tuple[int | None, int | None]:
+    """Page/row totals the site itself shows, e.g. "Page 1 of 37" or "1–25 of 912"."""
+    text = " ".join(soup.get_text(" ").split())
+    pages = re.search(r"\bpage\s+\d+\s*(?:of|/)\s*(\d[\d,]*)", text, re.I)
+    rows = re.search(r"\b\d[\d,]*\s*[–-]\s*\d[\d,]*\s+of\s+(\d[\d,]*)", text)
+    as_int = lambda m: int(m.group(1).replace(",", "")) if m else None
+    return as_int(pages), as_int(rows)
+
+
+def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False) -> tuple[list[dict], int]:
     """Return (entries, pages_scraped). Each entry has page/position/rank/name/score/data."""
     entries: list[dict] = []
-    seen: set[str] = set()
+    seen_rows: set[str] = set()
     headers: list[str] | None = None
+    exp_pages = exp_rows = None
     pages = 0
+    reason = ""
     html = pager.open(url)
 
-    while html is not None and pages < max_pages:
+    while True:
         page_no = pages + 1
         soup = BeautifulSoup(html, "html.parser")
+        if diagnose:
+            save_debug(page_no, html)
+            pager.screenshot(DEBUG_DIR / f"page_{page_no}.png")
         table = find_table(soup, headers)
         if table is None:
             if page_no == 1:
@@ -355,18 +453,26 @@ def scrape(pager, url: str, max_pages: int, delay: float) -> tuple[list[dict], i
                     + ("" if isinstance(pager, BrowserPager) else
                        ". If the page is drawn by JavaScript, try --browser")
                 )
+            reason = f"page {page_no} has no leaderboard table"
             break
 
         page_headers, records = parse_table(table)
         if headers is None:
             headers = page_headers
-        signature = hashlib.sha1(json.dumps(records, sort_keys=True).encode()).hexdigest()
-        if not records or signature in seen:
-            break  # empty page, or the site served a page we already have: we're past the end
-        seen.add(signature)
+            exp_pages, exp_rows = expected_totals(soup)
+        # Keep only rows we haven't stored yet. This handles "Load more" (the table grows)
+        # and sites that show page 1 again when asked for a page past the end.
+        new = [r for r in records if row_key(r) not in seen_rows]
+        if not records:
+            reason = f"page {page_no} is empty"
+            break
+        if not new:
+            reason = f"page {page_no} only repeated rows already read"
+            break
+        seen_rows.update(row_key(r) for r in new)
         pages = page_no
 
-        for rec in records:
+        for rec in new:
             entries.append({
                 "page": page_no,
                 "position": len(entries) + 1,
@@ -375,12 +481,24 @@ def scrape(pager, url: str, max_pages: int, delay: float) -> tuple[list[dict], i
                 "score": to_number(pick(rec, SCORE_KEYS)),
                 "data": rec,
             })
-        log.debug("page %d: %d rows", page_no, len(records))
+        log.debug("page %d: %d new rows", page_no, len(new))
 
+        if pages >= max_pages:
+            reason = f"reached the --max-pages limit of {max_pages}"
+            log.warning("stopped at --max-pages %d; there may be more pages (raise --max-pages)", max_pages)
+            break
         if delay:
             time.sleep(delay)
         html = pager.next(soup, page_no)
+        if html is None:
+            reason = pager.stop_reason
+            break
 
+    log.info("read %d page(s), %d rows; stopped because %s", pages, len(entries), reason or "done")
+    if exp_pages and pages < exp_pages:
+        log.warning("the site says there are %d pages but only %d were read", exp_pages, pages)
+    if exp_rows and len(entries) < exp_rows:
+        log.warning("the site says there are %d rows but only %d were read", exp_rows, len(entries))
     return entries, pages
 
 
@@ -422,7 +540,7 @@ def run_once(args) -> bool:
     pager = None
     try:
         pager = BrowserPager(headed=args.headed, channel=args.browser_channel) if args.browser else HttpPager()
-        entries, pages = scrape(pager, args.url, args.max_pages, args.page_delay)
+        entries, pages = scrape(pager, args.url, args.max_pages, args.page_delay, args.diagnose)
         if not entries:
             raise RuntimeError("scrape returned no rows")
         sid = store(conn, scraped_at, entries, pages)
@@ -445,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--loop", type=int, metavar="SECONDS", help="scrape repeatedly every SECONDS")
     p.add_argument("--url", default=DEFAULT_URL)
     p.add_argument("--db", type=Path, default=DEFAULT_DB)
-    p.add_argument("--max-pages", type=int, default=200, help="safety limit on pages per run")
+    p.add_argument("--max-pages", type=int, default=1000, help="safety limit on pages per run")
     p.add_argument("--page-delay", type=float, default=0.5, help="seconds between page requests")
     p.add_argument("--browser", action="store_true",
                    help="use a real Chromium browser (needed if the site blocks plain requests "
@@ -454,11 +572,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--browser-channel", default="auto", choices=["auto", *BrowserPager.CHANNELS],
                    help="with --browser: which browser to use (default: Playwright's Chromium if "
                         "installed, otherwise Microsoft Edge, otherwise Google Chrome)")
+    p.add_argument("--diagnose", action="store_true",
+                   help="save every page (HTML, plus a screenshot with --browser) to data/debug "
+                        "and log how each next page was found")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
 
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.DEBUG if (args.verbose or args.diagnose) else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
 

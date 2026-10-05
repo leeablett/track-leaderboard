@@ -1,0 +1,76 @@
+"""Mock leaderboards with different pagination styles: http://127.0.0.1:<port>/<mode>/leaderboard
+
+Used by run_pagination_tests.py. Each style has 7 pages of 5 rows (\"many\" has 250 pages)."""
+import http.server, json, urllib.parse, time
+PER = 5
+MODES = {"next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
+def pages_for(mode): return 250 if mode == "many" else 7
+ROW = "r => `<tr><td>${r.rank}</td><td>${r.name}</td><td>${r.score}</td></tr>`"
+TABLE = "rows => '<table><thead><tr><th>Rank</th><th>Player</th><th>Score</th></tr></thead><tbody>' + rows.map(" + ROW + ").join('') + '</tbody></table>'"
+ARROW_SVG = '<svg width="12" height="12" viewBox="0 0 12 12"><path d="M4 2l4 4-4 4" stroke="currentColor" fill="none"/></svg>'
+
+def shell(mode):
+    js_controls = {
+        # "Next »" / "Next ›" text buttons
+        "next_text": "pager.innerHTML = `<button id=prev ${p<=1?'disabled':''}>« Prev</button> Page ${p} of ${N} <button id=nxt ${p>=N?'disabled':''}>Next »</button>`; if (p<N) nxt.onclick = () => go(p+1);",
+        # icon-only arrow button with no label, plus numbered buttons (windowed with …)
+        "numbers": "let h=''; const win=[1,...[p-1,p,p+1].filter(x=>x>1&&x<N),N]; let last=0; for (const i of [...new Set(win)]) { if (i-last>1) h+='<span>…</span>'; h+=`<button class='pg ${i===p?'active':''}' data-p=${i}>${i}</button>`; last=i; } h+=`<button class=arrow ${p>=N?'disabled':''}>" + ARROW_SVG + "</button>`; pager.innerHTML=h; pager.querySelectorAll('.pg').forEach(b=>b.onclick=()=>go(+b.dataset.p)); if (p<N) pager.querySelector('.arrow').onclick=()=>go(p+1);",
+        # Material-UI style: aria-label="Go to next page", icon only
+        "mui": "pager.innerHTML = `<span>${(p-1)*5+1}–${Math.min(p*5,N*5)} of ${N*5}</span><button aria-label='Go to previous page' ${p<=1?'disabled':''}>" + ARROW_SVG + "</button><button aria-label='Go to next page' ${p>=N?'disabled':''} id=nx>" + ARROW_SVG + "</button>`; if (p<N) nx.onclick=()=>go(p+1);",
+        # plain Next button, but the table is replaced by a spinner for 3 s while loading
+        "slow": "pager.innerHTML = `<button id=nxt ${p>=N?'disabled':''}>Next</button>`; if (p<N) nxt.onclick = () => go(p+1, 3000, true);",
+        # plain Next button, old table stays visible for 3 s while loading
+        "slow_keep": "pager.innerHTML = `<button id=nxt ${p>=N?'disabled':''}>Next</button>`; if (p<N) nxt.onclick = () => go(p+1, 3000, false);",
+        # "Load more" appends rows to the same table
+        "loadmore": "pager.innerHTML = p<N ? `<button id=more>Load more</button>` : ''; if (p<N) more.onclick = () => go(p+1, 0, false, true);",
+        # many pages with a plain Next
+        "many": "pager.innerHTML = `<button id=nxt ${p>=N?'disabled':''}>Next</button>`; if (p<N) nxt.onclick = () => go(p+1);",
+        # Next is an <a> with class 'page-link' and text 'Next ›' (bootstrap), no href change (#)
+        "bootstrap": "pager.innerHTML = `<ul class=pagination><li class='page-item ${p>=N?'disabled':''}'><a class=page-link href='#'>Next ›</a></li></ul>`; if (p<N) pager.querySelector('a').onclick = e => { e.preventDefault(); go(p+1); };",
+    }[mode]
+    return f"""<html><body><div id=app>Loading…</div><div id=pager></div><script>
+let p = 1, N = {pages_for(mode)}, all = [];
+const table = {TABLE};
+async function go(n, delay=0, blank=false, append=false) {{
+  if (blank) app.innerHTML = '<div class=spinner>Loading…</div>';
+  if (delay) await new Promise(r => setTimeout(r, delay));
+  const d = await (await fetch('/api?page=' + n)).json();
+  p = n; all = append ? all.concat(d.rows) : d.rows;
+  app.innerHTML = table(all);
+  {js_controls}
+}}
+go(1);
+</script></body></html>"""
+
+def server_rendered(p):
+    rows = "" if p > 7 else "".join(f"<tr><td>{r}</td><td>Player {r}</td><td>{1000-r}</td></tr>" for r in range((p-1)*PER+1, p*PER+1))
+    nxt = f'<a class="page-link" href="?page={p+1}">Next ›</a>' if p < 7 else '<span class="page-link disabled">Next ›</span>'
+    return f"<html><table><thead><tr><th>Rank</th><th>Player</th><th>Score</th></tr></thead><tbody>{rows}</tbody></table><nav>{nxt}</nav></html>"
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
+        if u.path == "/api":
+            p = int(q["page"][0])
+            rows = [{"rank": r, "name": f"Player {r}", "score": 10000 - r} for r in range((p-1)*PER+1, p*PER+1)]
+            body, ct = json.dumps({"rows": rows}).encode(), "application/json"
+        else:
+            mode = u.path.strip("/").split("/")[0]
+            if mode not in MODES:
+                self.send_response(404); self.end_headers(); return
+            body = (server_rendered(int(q.get("page", ["1"])[0])) if mode == "ssr_next_text" else shell(mode)).encode()
+            ct = "text/html; charset=utf-8"
+        self.send_response(200); self.send_header("Content-Type", ct); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+
+
+def start(port: int = 0):
+    """Start the mock sites in a background thread; returns the server (server.server_port)."""
+    import threading
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+if __name__ == "__main__":
+    http.server.ThreadingHTTPServer(("127.0.0.1", 8770), H).serve_forever()
