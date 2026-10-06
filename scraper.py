@@ -534,7 +534,7 @@ class BrowserPager:
                 if self.context is None:
                     self.browser = self._pw.chromium.launch(headless=not headed, args=launch_args, **kw)
                     self.context = self.browser.new_context(viewport=options["viewport"])
-                log.debug("using browser: %s%s", ch, f" with profile {self.profile_dir}" if self.profile_dir else "")
+                self.channel = ch
                 break
             except Exception as exc:
                 tried.append(f"{ch}: {str(exc).strip().splitlines()[0]}")
@@ -546,6 +546,15 @@ class BrowserPager:
             )
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.launch_seconds = time.monotonic() - started
+        if self.profile_dir is not None:
+            try:
+                shown = self.profile_dir.relative_to(Path.cwd())
+            except ValueError:
+                shown = self.profile_dir
+            where = f"saved profile {shown}"
+        else:
+            where = "no saved profile"
+        log.info("browser started in %.1f s (%s, %s)", self.launch_seconds, self.channel, where)
         # How long the slowest page took to appear after clicking Next, learned as we go and
         # kept between runs. Waits for "has the page changed?" scale with it (see _wait_time).
         self.slowest: float | None = None
@@ -981,7 +990,6 @@ class Browsers:
             a = self.args
             self.pager = BrowserPager(headed=a.headed, channel=a.browser_channel, next_control=a.next,
                                       profile=None if a.no_profile else DEFAULT_PROFILE)
-            log.info("browser started in %.1f s", self.pager.launch_seconds)
         else:
             self.pager.reset()
         return self.pager

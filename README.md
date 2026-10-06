@@ -49,6 +49,7 @@ flowchart LR
 - **The website doesn't welcome automated visitors.** It has a firewall that blocks simple programs. We get past it by using a normal browser, but the site's owners could tighten this or object. Asking them for permission, or for a data feed, would be the most reliable long-term option.
 - **Website changes can break it.** If the site's layout changes, the scraper records an error rather than saving bad data, and will need a small fix.
 - **A new season needs one change.** The scraper collects season 4. When season 5 starts, its start command needs `--season 5` (see [Seasons](#7-seasons)).
+- **Older laptops are fine.** The browser stays open between runs and keeps a cache of the site on disk, so an old PC isn't made to start from scratch every 2 minutes (see [Running on an older or slower PC](#10-running-on-an-older-or-slower-pc-jamies-laptop-)).
 - **Storage grows steadily**, roughly tens of MB a day. That's fine for months on a normal PC, and old data can be trimmed if needed.
 
 ---
@@ -157,6 +158,8 @@ python scraper.py --once --headed
 ```
 
 ## 5. Run it every 2 minutes
+
+On an older or slower PC, also see [Running on an older or slower PC](#10-running-on-an-older-or-slower-pc-jamies-laptop-).
 
 **Option A: in a window.** Runs until you press **Ctrl+C** or close the window.
 
@@ -514,6 +517,140 @@ python dashboard.py --port 8051
 | Page shows the demo players | You started it with `--demo`. Run `python dashboard.py --stop`, then start it without `--demo`. |
 | `pythonw` is not recognized | Use `pyw` instead: `Start-Process pyw dashboard.py`. |
 
+## 10. Running on an older or slower PC (Jamie's laptop 😉)
+
+The scraper is designed to run happily on an older laptop. Most of this is automatic; this
+section explains what it does, how to check it's working, and the few settings worth changing.
+
+### What it already does for you
+
+| What | Why it helps a slow PC |
+|---|---|
+| **Keeps the browser open between runs** (when running every 2 minutes) | Starting a browser is often the slowest part on an old laptop; now it happens once, not every 2 minutes. It's restarted once an hour, and after any error, to stay healthy. |
+| **Saved browser profile** (see below) | The site's code is kept on disk, so even a freshly started browser doesn't download it again. |
+| **Skips images** | Less to download and draw. The scraper only reads the table. |
+| **Waits only as long as the site needs** | It doesn't wait for "network idle" (which this site never reaches), and the last-page check waits a few times longer than the slowest page, not a fixed half minute. |
+
+### The saved browser profile
+
+**What it is.** A browser keeps a *profile*: its own folder with its cache, cookies and
+settings. Normally the scraper's browser would get a brand-new, empty profile every time it
+starts, and then download all of the leaderboard site's code again. The saved profile keeps
+that folder between runs, so the site's code is downloaded once and then read from disk.
+
+**Where it is.** In your scraper folder, one folder per browser:
+
+| Browser used | Folder |
+|---|---|
+| Microsoft Edge (most Windows PCs) | `data\browser-profile\msedge` |
+| Playwright's Chromium | `data\browser-profile\chromium` |
+| Google Chrome | `data\browser-profile\chrome` |
+
+It's created by the first run and typically grows to tens of MB (a few hundred at most). It's
+separate from your own Edge or Chrome: your own browsing history, passwords and logins are
+never touched, and nothing from them is used.
+
+**What's kept, and what isn't.**
+
+| Kept between runs | Cleared at the start of every run |
+|---|---|
+| The download cache (the site's code, styles and other files) | Cookies |
+| | Anything the site saved in the browser (e.g. "which page you were on") |
+| | The open tab: every run uses a new one |
+
+So every run still starts from page 1, exactly like a first visit; only the slow downloading
+is skipped.
+
+**How to check it's working.** Run a test twice:
+
+```
+python scraper.py --once
+```
+
+```
+python scraper.py --once
+```
+
+✅ Each run starts with a line like this, naming the profile folder:
+
+```
+INFO browser started in 2.3 s (msedge, saved profile data\browser-profile\msedge)
+```
+
+✅ Compare the `first page` time in the `took` line of the two runs. The second is usually
+quicker, because the site's code came from the disk cache instead of the internet:
+
+```
+INFO season 4: took 14.2 s: first page 1.1 s, 11 more page(s) 8.6 s (slowest 0.8 s), end check 4.5 s
+```
+
+**Only one scraper can use the profile at a time.** If a second one starts (for example a
+`--once` test while the 2-minute loop is running), it carries on without the profile and says:
+
+```
+WARNING couldn't use the saved browser profile (...); using a fresh one
+```
+
+That run still works, just without the cache. If you see this with only one scraper running,
+reset the profile (below).
+
+**Reset the profile** (if the warning keeps appearing, or something seems stuck). Stop the
+scraper first, then:
+
+```
+Remove-Item -Recurse data\browser-profile
+```
+
+It's recreated, empty, on the next run. Your leaderboard data (`data\leaderboard.db`) is not
+affected.
+
+**Turn it off** (e.g. if disk space is very tight, or to rule it out while troubleshooting):
+
+```
+python scraper.py --no-profile
+```
+
+For Task Scheduler, use `scraper.py --no-profile` as the **Add arguments**.
+
+### Recommended setup for a slow laptop
+
+1. **Run it in the loop** (step 5: `python scraper.py`, or the Task Scheduler task), rather
+   than starting `--once` every 2 minutes. The loop keeps the browser open between runs.
+2. **Stop the laptop going to sleep** while plugged in, or it stops collecting. The screen
+   can still turn off.
+   - Windows 11: **Settings → System → Power & battery → Screen and sleep → When plugged in,
+     put my device to sleep after: Never**
+   - Windows 10: **Settings → System → Power & sleep → Sleep → When plugged in, PC goes to
+     sleep after: Never**
+3. **If a run takes longer than 2 minutes**, scrape less often, e.g. every 5 minutes:
+
+   ```
+   python scraper.py --loop 300
+   ```
+
+   For Task Scheduler: `scraper.py --loop 300`.
+4. **Only run the dashboard when you're looking at it** (`python dashboard.py --stop` when done).
+   It's light, but on an old laptop every bit helps.
+5. **Use Edge.** If `python -m playwright install chromium` failed or was skipped, the scraper
+   uses Microsoft Edge automatically; nothing to set.
+
+### Reading the timing line
+
+After every run the scraper logs where the time went:
+
+```
+INFO season 4: took 14.2 s: first page 1.1 s, 11 more page(s) 8.6 s (slowest 0.8 s), end check 4.5 s
+```
+
+| If this part is large | It usually means | Try |
+|---|---|---|
+| `browser started in …` (once, at the start) | Slow disk or a busy laptop | Normal on old PCs: it only happens once an hour in the loop. |
+| `first page` | Slow internet, or the site's code being downloaded | The saved profile should make it quicker from the second run on; check the profile line above. |
+| `more page(s)` / `slowest` | The laptop or the site is slow drawing each page | Close other programs; scrape less often (`--loop 300`). |
+| `end check` | Follows the slowest page (a few times longer) | Nothing to do: it shrinks when pages are quicker. |
+
+If it's still too slow, send the `browser started` and `took` lines from a few runs.
+
 ## Checking the scraper still works (for developers)
 
 The scraper is tested against mock leaderboards: a copy of this site's own layout (the
@@ -591,7 +728,7 @@ never touched by an update.
 | `--season 5` | Season(s) to collect: `5`, `4,5`, `1-3`, `-1` (beta), `0` (pre-season) or `-1-3` (default: 4, from the address) |
 | `--no-browser` | Use plain web requests instead of a browser (this site needs the browser, which is the default) |
 | `--headed` | Show the browser window while it works |
-| `--no-profile` | Don't keep a saved browser profile (`data\browser-profile`); each new browser then downloads the site's code again |
+| `--no-profile` | Don't keep a saved browser profile (`data\browser-profile`); each new browser then downloads the site's code again. See [Running on an older or slower PC](#10-running-on-an-older-or-slower-pc-jamies-laptop-) |
 | `--browser-channel msedge` | Which browser to use: `auto` (default), `chromium`, `msedge` or `chrome` |
 | `--page-delay 0.5` | Seconds to wait between pages |
 | `--max-pages 1000` | Safety limit on pages per run (a warning is logged if it's reached) |
