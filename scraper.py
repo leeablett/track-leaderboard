@@ -660,7 +660,9 @@ class BrowserPager:
         found = self._find_next(page_no)
         if found["action"] != "click":
             return None
-        log.info("page %d didn't change after clicking; clicking %s again", page_no, found["how"])
+        shown = re.search(r'"([^"]*)"', found["how"])
+        log.info("checking whether page %d is the last: clicking %s once more", page_no - 1,
+                 shown.group(1) if shown else "Next")
         self._click_next()
         if not self._wait_for_change(before, self._wait_time(2, 2)):
             return None
@@ -696,7 +698,8 @@ def expected_totals(soup: BeautifulSoup) -> tuple[int | None, int | None]:
     return as_int(pages), as_int(rows)
 
 
-def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False) -> tuple[list[dict], int]:
+def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False,
+           label: str = "") -> tuple[list[dict], int]:
     """Return (entries, pages_scraped). Each entry has page/position/rank/name/score/data."""
     entries: list[dict] = []
     seen_rows: dict[str, int] = {}  # row -> page it was first read on
@@ -707,9 +710,10 @@ def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False
     reason = ""
     started = time.monotonic()
     page_times: list[float] = []  # seconds from reading one page to having the next on screen
+    log.info("%sreading %s", label, url)
     html = pager.open(url)
     first_page = time.monotonic() - started
-    last_page_done = started + first_page  # when the most recent new page was read
+    last_page_done = started  # when the most recent new page was read
 
     while True:
         page_no = pages + 1
@@ -761,7 +765,13 @@ def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False
         for r in new:
             seen_rows[row_key(r)] = page_no
         pages = page_no
-        last_page_done = time.monotonic()
+        now = time.monotonic()
+        # Progress: this page's time (getting it on screen and reading it) and the running total.
+        log.info("%spage %d: %d rows in %.1f s (%.1f s so far)", label, page_no, len(new),
+                 now - last_page_done, now - started)
+        if page_no == 1:
+            first_page = now - started
+        last_page_done = now
 
         for rec in new:
             entries.append({
@@ -787,14 +797,14 @@ def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False
             reason = pager.stop_reason
             break
 
-    log.info("read %d page(s), %d rows; stopped because %s", pages, len(entries), reason or "done")
+    log.info("%sread %d page(s), %d rows; stopped because %s", label, pages, len(entries), reason or "done")
     # Where the time went, so a slow run can be explained: the first page, the other pages
     # (including the pause between pages and reading each one), and the end check (making
     # sure there's no further page). The three add up to the total.
     ended = time.monotonic()
     moves = page_times[:pages - 1]
-    log.info("took %.1f s: first page %.1f s, %d more page(s) %.1f s (slowest %.1f s), end check %.1f s",
-             ended - started, first_page, pages - 1, last_page_done - started - first_page,
+    log.info("%stook %.1f s: first page %.1f s, %d more page(s) %.1f s (slowest %.1f s), end check %.1f s",
+             label, ended - started, first_page, pages - 1, max(0.0, last_page_done - started - first_page),
              max(moves, default=0), ended - last_page_done)
     if "repeated rows" in reason or "no next-page control" in reason or "no control matching" in reason:
         pager.log_controls()
@@ -827,8 +837,9 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 
 def current_season(conn: sqlite3.Connection) -> int | None:
-    """The season of the most recent successful snapshot (what "now" means by default)."""
-    row = conn.execute("SELECT season FROM snapshots WHERE status = 'ok' ORDER BY id DESC LIMIT 1").fetchone()
+    """The current season: the highest season number with data (what "now" means by default).
+    Backfilling an older season later doesn't change it. None if no data has a season."""
+    row = conn.execute("SELECT MAX(season) FROM snapshots WHERE status = 'ok'").fetchone()
     return row[0] if row else None
 
 
@@ -921,7 +932,7 @@ def scrape_season(args, conn: sqlite3.Connection, url: str, season: int | None,
         else:
             pager = (BrowserPager(headed=args.headed, channel=args.browser_channel, next_control=args.next)
                      if args.browser else HttpPager())
-        entries, pages = scrape(pager, url, args.max_pages, args.page_delay, args.diagnose)
+        entries, pages = scrape(pager, url, args.max_pages, args.page_delay, args.diagnose, label)
         if not entries:
             raise RuntimeError("scrape returned no rows")
         sid = store(conn, scraped_at, entries, pages, season=season)

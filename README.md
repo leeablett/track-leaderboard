@@ -110,23 +110,38 @@ Run the test in step 4 to check.
 python scraper.py --once -v
 ```
 
-✅ You should see one line per page, then a summary, like:
+✅ You should see the progress, one line per page with that page's time and the running total, then a summary, like:
 
 ```
-page 1 -> 2 via Next label: button ">>" class="player-name" [in pagination]
-```
-
-```
-INFO read 12 page(s), 1150 rows; stopped because Next no longer changes the page, so page 12 is the last
+INFO season 4: page 1: 100 rows in 1.1 s (1.1 s so far)
 ```
 
 ```
-INFO took 14.2 s: first page 1.1 s, 11 more page(s) 8.6 s (slowest 0.5 s), end check 4.5 s
+INFO season 4: page 2: 100 rows in 0.8 s (1.9 s so far)
+```
+
+```
+INFO season 4: page 12: 50 rows in 0.7 s (9.7 s so far)
+```
+
+```
+INFO checking whether page 12 is the last: clicking >> once more
+```
+
+```
+INFO season 4: read 12 page(s), 1150 rows; stopped because Next no longer changes the page, so page 12 is the last
+```
+
+```
+INFO season 4: took 14.2 s: first page 1.1 s, 11 more page(s) 8.6 s (slowest 0.8 s), end check 4.5 s
 ```
 
 ```
 INFO season 4: snapshot 1: 1150 rows from 12 page(s)
 ```
+
+The same progress lines appear on every run when it's running every 2 minutes. With `-v` you
+also see which control was clicked to reach each page.
 
 Check the page count matches the website (click `>>` until the last page to count).
 
@@ -187,7 +202,7 @@ One player's rank and score over time:
 python export.py player "Some Name" -o player.csv
 ```
 
-These export the **current season** (the one the scraper last collected). For another season, add `--season`:
+These export the **current season**, which is the highest season number in the database. For another season, add `--season`:
 
 ```
 python export.py latest --season 3 -o season3.csv
@@ -430,7 +445,7 @@ it normally.
 
 ### Using the dashboard
 
-Pick a **Season** at the top (it starts on the current season, and remembers your choice), and
+Pick a **Season** at the top (it starts on the current season, the highest season number, and remembers your choice), and
 use the **Compare over** buttons (last hour, 6 hours, 24 hours, 7 days, all time) to change the
 period every widget looks at. For a finished season the periods count back from its last
 snapshot, so you can still see who moved most in its final day.
