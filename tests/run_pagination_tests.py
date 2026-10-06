@@ -46,8 +46,15 @@ def main() -> int:
         try:
             entries, pages = scraper.scrape(pager, f"{base}/{style}/leaderboard", 1000, 0)
             names = {e["name"] for e in entries}
-            ok = len(entries) == want and len(names) == want
+            bad_names = [n for n in names if not n or n.startswith("#")]
+            # every mock names players "Player <rank>"; a rank, when the site shows one, must match
+            ranks_ok = all(e["rank"] in (None, int(e["name"].lstrip("Player "))) for e in entries)
+            if style == "blazor":  # the real site's "#1 | NRG-DFC" cells: rank must be split out
+                ranks_ok = ranks_ok and all(e["rank"] is not None for e in entries)
+            ok = len(entries) == want and len(names) == want and not bad_names and ranks_ok
             detail = f"{len(entries)} rows from {pages} pages"
+            if bad_names or not ranks_ok:
+                detail += f"; names/ranks wrong, e.g. {entries[0]['rank']!r} / {entries[0]['name']!r}"
         except Exception as exc:
             ok, detail = False, f"error: {exc}"
         finally:

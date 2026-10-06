@@ -60,7 +60,8 @@ BLAZOR = """<html><head><meta charset=utf-8></head><body style="background:#021;
 <table class=board><tbody id=board></tbody></table>
 <script>
 // Copied from the real site's markup: the pager is the first row of the leaderboard table,
-// "<<" / ">>" are <button class="player-name"> like the player names, the headings are plain
+// "<<" / ">>" are <button class="player-name">, each player cell holds its own small table
+// ("#1" | "NRG-DFC"), the headings are plain
 // <td>s, and rows are swapped in place (Blazor). On the last page ">>" stays enabled and does nothing.
 let p = 1; const N = 7;
 async function go(n) {
@@ -71,7 +72,9 @@ async function go(n) {
      <td class="page-selector" b-gszbhyv0cx="">Page ${p}</td><!--!-->
      <td class="page-selector" b-gszbhyv0cx=""><button class="player-name" style="width:50px" b-gszbhyv0cx="">&gt;&gt;</button></td></tr>` +
     `<tr><td>Player</td><td>Rating</td><td>Win</td><td>Loss</td><td>Draw</td></tr>` +
-    d.rows.map(r => `<tr><td><button class="player-name">${r.name.replace(' ', '')}</button></td><td>${r.score}</td><td>${r.rank % 9}</td><td>${r.rank % 4}</td><td>0</td></tr>`).join('');
+    d.rows.map(r => `<tr><td><table><tr b-gszbhyv0cx=""><td class="player-name" style="width:20px" b-gszbhyv0cx="">#${r.rank}</td><!--!-->
+       <td class="player-name" style="padding-left:10px;border-left-width:1px;" b-gszbhyv0cx="">${r.name.replace(' ', '')}</td></tr></table></td>
+       <td>${r.score}</td><td>${r.rank % 9}</td><td>${r.rank % 4}</td><td>0</td></tr>`).join('');
   const b = board.querySelectorAll('.page-selector button');
   b[0].onclick = () => go(p - 1); b[1].onclick = () => go(p + 1);
 }

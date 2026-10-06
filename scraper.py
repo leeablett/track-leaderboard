@@ -103,16 +103,41 @@ def is_pager_row(values: list[str]) -> bool:
             and any(re.fullmatch(r"[<>«»‹›]+", v) for v in values))
 
 
+def own_rows(table) -> list:
+    """Rows of this table only, not rows of tables nested inside its cells."""
+    return [tr for tr in table.find_all("tr") if tr.find_parent("table") is table]
+
+
+def own_cells(tr) -> list:
+    return tr.find_all(["td", "th"], recursive=False)
+
+
+RANK_PREFIX = re.compile(r"#\s*\d+")
+RANK_AND_NAME = re.compile(r"(#\s*\d+)\s+(.+)")
+
+
+def cell_parts(cell) -> list[str]:
+    """A cell's text. A cell holding its own little table (e.g. "#1 | NRG-DFC") gives one part
+    per inner cell, so the rank and the name can be told apart."""
+    inner = cell.find("table")
+    if inner is not None:
+        parts = [c.get_text(" ", strip=True) for c in inner.find_all(["td", "th"])]
+        parts = [p for p in parts if p]
+        if parts:
+            return parts
+    return [cell.get_text(" ", strip=True)]
+
+
 def find_header_row(rows):
     """The column-headings row: a row of <th> cells, or (if the site uses ordinary cells) the
     first row of all-text cells followed by rows containing numbers. Pager rows are skipped."""
     first = []
     for tr in rows[:5]:
-        cells = tr.find_all(["td", "th"])
+        cells = own_cells(tr)
         values = [c.get_text(" ", strip=True) for c in cells]
         if not cells or not any(values) or is_pager_row(values):
             continue
-        if tr.find("th") and not tr.find("td"):
+        if all(c.name == "th" for c in cells):
             return tr
         first.append((tr, values))
     if first:
@@ -125,14 +150,14 @@ def find_header_row(rows):
 
 
 def parse_table(table) -> tuple[list[str], list[dict[str, str]]]:
-    rows = table.find_all("tr")
+    rows = own_rows(table)
     headers: list[str] = []
     head = table.find("thead")
-    header_row = head.find("tr") if head else None
+    header_row = head.find("tr") if head is not None and head.find_parent("table") is table else None
     if header_row is None:
         header_row = find_header_row(rows)
     if header_row is not None:
-        headers = [slug(c.get_text(" ", strip=True)) for c in header_row.find_all(["th", "td"])]
+        headers = [slug(c.get_text(" ", strip=True)) for c in own_cells(header_row)]
 
     # De-duplicate header names.
     seen: dict[str, int] = {}
@@ -147,18 +172,27 @@ def parse_table(table) -> tuple[list[str], list[dict[str, str]]]:
     for tr in rows:
         if tr is header_row:
             continue
-        cells = tr.find_all(["td", "th"])
-        if not cells or not tr.find("td"):
+        cells = own_cells(tr)
+        if not cells or not any(c.name == "td" for c in cells):
             continue
         values = [c.get_text(" ", strip=True) for c in cells]
         if not any(values):
             continue
         if is_pager_row(values):
             continue  # a pager row ("<<  Page 2  >>") inside the table, not a player
-        record = {}
-        for i, v in enumerate(values):
+        record, rank = {}, None
+        for i, cell in enumerate(cells):
             key = headers[i] if i < len(headers) and headers[i] else f"col_{i + 1}"
-            record[key] = v
+            parts = cell_parts(cell)
+            # "#1 NRG-DFC" in one cell (or split across an inner table): keep the rank separately.
+            if rank is None and "rank" not in headers:
+                if len(parts) >= 2 and RANK_PREFIX.fullmatch(parts[0]):
+                    rank, parts = parts[0], parts[1:]
+                elif len(parts) == 1 and (m := RANK_AND_NAME.fullmatch(parts[0])):
+                    rank, parts = m.group(1), [m.group(2)]
+            record[key] = " ".join(parts)
+        if rank is not None:
+            record = {"rank": rank.replace(" ", ""), **record}
         records.append(record)
     return headers, records
 
