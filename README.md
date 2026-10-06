@@ -6,6 +6,9 @@ Every run reads **all pages** of the leaderboard and saves them as one timestamp
 `data\leaderboard.db`, labelled with its **season**, so you build up a full history of ranks
 and scores for each season.
 
+For how it all works under the hood (architecture, design decisions, data model, tests and
+project history), see the **[solution document](docs/SOLUTION.md)**.
+
 ## Executive summary (for Jamie)
 
 **What it does:** every 2 minutes, a PC visits the public leaderboard, reads every page of it,
@@ -652,6 +655,8 @@ INFO season 4: took 14.2 s: first page 1.1 s, 11 more page(s) 8.6 s (slowest 0.8
 If it's still too slow, send the `browser started` and `took` lines from a few runs.
 
 ## Checking the scraper still works (for developers)
+
+How the tests and mock sites fit together is described in the [solution document](docs/SOLUTION.md#12-testing).
 
 The scraper is tested against mock leaderboards: a copy of this site's own layout (the
 `<<  Page N  >>` row and `#1 | name` cells), plus other common pagination styles ("Next »"
