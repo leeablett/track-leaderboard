@@ -3,7 +3,7 @@
 Used by run_pagination_tests.py. Each style has 7 pages of 5 rows (\"many\" has 250 pages)."""
 import http.server, json, urllib.parse, time
 PER = 5
-MODES = {"divpager", "blazor", "formpost", "decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
+MODES = {"divpager", "blazor", "blazor_busy", "formpost", "decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
 def pages_for(mode): return 250 if mode == "many" else 3 if mode in ("veryslow", "lostclick") else 7
 ROW = "r => `<tr><td>${r.rank}</td><td>${r.name}</td><td>${r.score}</td></tr>`"
 TABLE = "rows => '<table><thead><tr><th>Rank</th><th>Player</th><th>Score</th></tr></thead><tbody>' + rows.map(" + ROW + ").join('') + '</tbody></table>'"
@@ -84,6 +84,12 @@ go(1);
 </script></body></html>"""
 
 
+# Same page, but the connection to the server falls back to constant small requests (as Blazor
+# does when its live connection is blocked), so the network never goes idle.
+BLAZOR_BUSY = BLAZOR.replace("go(1);\n</script>", "go(1);\nsetInterval(() => fetch('/poll'), 200);\n</script>")
+assert BLAZOR_BUSY != BLAZOR
+
+
 def form_page(p, n=7):
     """Like the real site: "<<  Page N  >>" form buttons above the table; each click POSTs the
     form and reloads the page. Addresses are only partly honoured: ?page=2 works, ?page=3+ shows page 1."""
@@ -111,10 +117,14 @@ class H(http.server.BaseHTTPRequestHandler):
             body, ct = json.dumps({"rows": rows}).encode(), "application/json"
         else:
             mode = u.path.strip("/").split("/")[0]
+            if mode == "poll":
+                self.send_response(200); self.end_headers(); return
             if mode not in MODES:
                 self.send_response(404); self.end_headers(); return
             if mode == "blazor":
                 body = BLAZOR.encode()
+            elif mode == "blazor_busy":
+                body = BLAZOR_BUSY.encode()
             elif mode == "formpost":
                 asked = int(q.get("page", ["1"])[0])
                 body = form_page(asked if asked <= 2 else 1).encode()

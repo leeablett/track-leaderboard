@@ -469,6 +469,21 @@ TABLE_STATE_JS = """() => {
 }"""
 
 
+# Resolves once the table has looked the same for 300 ms (checked every 50 ms), or after 3 s.
+TABLE_STABLE_JS = f"""async () => {{
+  const state = {TABLE_STATE_JS.strip()};
+  let last = state(), since = performance.now();
+  const end = since + 3000;
+  while (performance.now() < end) {{
+    await new Promise(r => setTimeout(r, 50));
+    const now = state();
+    if (now !== last) {{ last = now; since = performance.now(); }}
+    else if (performance.now() - since >= 300) return true;
+  }}
+  return false;
+}}"""
+
+
 class BrowserPager:
     """Drives a real Chromium browser, so JavaScript-rendered pages and
     click-to-paginate leaderboards work."""
@@ -505,6 +520,12 @@ class BrowserPager:
         self.stop_reason = ""
 
     def _settle(self):
+        """Wait until the leaderboard is on screen and has stopped changing.
+
+        This deliberately doesn't wait for the network to go quiet: sites like this one keep a
+        live connection to their server (Blazor), and on some PCs it falls back to a constant
+        stream of small requests, so "network idle" never comes and every page cost 3 s extra.
+        """
         from playwright.sync_api import Error as PWError
 
         try:
@@ -512,9 +533,9 @@ class BrowserPager:
         except PWError:
             return  # no table (yet); the caller reports it
         try:
-            self.page.wait_for_load_state("networkidle", timeout=3_000)
+            self.page.evaluate(TABLE_STABLE_JS)
         except PWError:
-            pass  # sites that keep a connection open never go idle; the table is already there
+            pass  # the page navigated while we watched; the caller's checks cover that
 
     def open(self, url: str) -> str:
         self.visited.add(url)
