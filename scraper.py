@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup
 
-DEFAULT_URL = "https://vfm.bdynamicsstudio.com/leaderboard"
+DEFAULT_URL = "https://vfm.bdynamicsstudio.com/leaderboard?season=4"
 DEFAULT_DB = Path(__file__).parent / "data" / "leaderboard.db"
 DEBUG_DIR = Path(__file__).parent / "data" / "debug"
 
@@ -39,6 +39,7 @@ log = logging.getLogger("scraper")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    season      INTEGER,                -- leaderboard season (NULL = unknown, e.g. older data)
     scraped_at  TEXT NOT NULL,          -- UTC ISO-8601
     pages       INTEGER NOT NULL DEFAULT 0,
     row_count   INTEGER NOT NULL DEFAULT 0,
@@ -58,6 +59,33 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE INDEX IF NOT EXISTS idx_entries_snapshot ON entries(snapshot_id);
 CREATE INDEX IF NOT EXISTS idx_entries_name ON entries(name);
 CREATE INDEX IF NOT EXISTS idx_snapshots_time ON snapshots(scraped_at);
+"""
+# Indexes on columns added after the first release, and handy views (recreated each time so
+# they stay current). Views are plain SELECTs; they never change stored data.
+SCHEMA_LATE = """
+CREATE INDEX IF NOT EXISTS idx_snapshots_season ON snapshots(season, status, id);
+
+DROP VIEW IF EXISTS latest;
+CREATE VIEW latest AS                    -- the most recent successful snapshot of each season
+    SELECT s.season, e.rank, e.name, e.score, e.page, e.position, s.scraped_at, e.data
+    FROM entries e JOIN snapshots s ON s.id = e.snapshot_id
+    WHERE s.id IN (SELECT MAX(id) FROM snapshots WHERE status = 'ok' GROUP BY season)
+    ORDER BY s.season DESC, e.position;
+
+DROP VIEW IF EXISTS history;
+CREATE VIEW history AS                   -- every successful snapshot
+    SELECT s.id AS snapshot_id, s.season, s.scraped_at, e.rank, e.name, e.score, e.page, e.position, e.data
+    FROM entries e JOIN snapshots s ON s.id = e.snapshot_id
+    WHERE s.status = 'ok';
+
+DROP VIEW IF EXISTS seasons;
+CREATE VIEW seasons AS                   -- one row per season: how much data, and when
+    SELECT g.season, g.snapshots, g.first_scraped, g.last_scraped, x.row_count AS players
+    FROM (SELECT season, COUNT(*) AS snapshots, MIN(scraped_at) AS first_scraped,
+                 MAX(scraped_at) AS last_scraped, MAX(id) AS last_id
+          FROM snapshots WHERE status = 'ok' GROUP BY season) g
+    JOIN snapshots x ON x.id = g.last_id
+    ORDER BY g.season;
 """
 
 
@@ -539,8 +567,15 @@ class BrowserPager:
     def _click_next(self):
         # Mark the current document. Form buttons (like "<<" / ">>") reload the whole page;
         # the new page won't carry the mark, which tells _wait_for_change it has arrived.
+        from playwright.sync_api import Error as PWError
+
         self.page.evaluate("document.documentElement.dataset.lbOld = '1'")
-        self.page.locator("[data-lb-next]").first.click()
+        try:
+            self.page.locator("[data-lb-next]").first.click(timeout=5_000)
+        except PWError as exc:
+            # The control was redrawn or removed just as we clicked (e.g. a slow page finished
+            # loading). Don't fail the run: the wait that follows checks whether the page moved on.
+            log.debug("click on the next-page control didn't go through: %s", str(exc).splitlines()[0])
 
     def _wait_for_change(self, before: str, timeout_ms: int, reloaded: bool = True) -> bool:
         """Wait until the table differs from `before` (or, if `reloaded`, a new page has loaded)."""
@@ -712,19 +747,60 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    migrate(conn)
+    conn.executescript(SCHEMA_LATE)
     return conn
 
 
+def migrate(conn: sqlite3.Connection) -> None:
+    """Bring a database made by an older version up to date. Existing data is kept."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(snapshots)")}
+    if "season" not in cols:
+        with conn:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN season INTEGER")
+
+
+def current_season(conn: sqlite3.Connection) -> int | None:
+    """The season of the most recent successful snapshot (what "now" means by default)."""
+    row = conn.execute("SELECT season FROM snapshots WHERE status = 'ok' ORDER BY id DESC LIMIT 1").fetchone()
+    return row[0] if row else None
+
+
+def season_of(url: str) -> int | None:
+    """The season in a leaderboard address (…/leaderboard?season=4), if any."""
+    value = parse_qs(urlparse(url).query).get("season", [None])[0]
+    return int(value) if value and value.isdigit() else None
+
+
+def with_season(url: str, season: int) -> str:
+    parts = urlparse(url)
+    query = parse_qs(parts.query)
+    query["season"] = [str(season)]
+    return urlunparse(parts._replace(query=urlencode(query, doseq=True)))
+
+
+def parse_seasons(text: str) -> list[int]:
+    """'4' -> [4], '3,4' -> [3, 4], '1-4' -> [1, 2, 3, 4]."""
+    seasons: list[int] = []
+    for part in text.replace(" ", "").split(","):
+        if "-" in part:
+            lo, hi = (int(x) for x in part.split("-", 1))
+            seasons.extend(range(lo, hi + 1))
+        elif part:
+            seasons.append(int(part))
+    return sorted(set(seasons))
+
+
 def store(conn: sqlite3.Connection, scraped_at: str, entries: list[dict], pages: int,
-          error: str | None = None) -> int:
+          error: str | None = None, season: int | None = None) -> int:
     content_hash = hashlib.sha1(
         json.dumps([e["data"] for e in entries], sort_keys=True).encode()
     ).hexdigest() if entries else None
     with conn:
         cur = conn.execute(
-            "INSERT INTO snapshots (scraped_at, pages, row_count, status, error, content_hash) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (scraped_at, pages, len(entries), "error" if error else "ok", error, content_hash),
+            "INSERT INTO snapshots (season, scraped_at, pages, row_count, status, error, content_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (season, scraped_at, pages, len(entries), "error" if error else "ok", error, content_hash),
         )
         snapshot_id = cur.lastrowid
         conn.executemany(
@@ -736,18 +812,19 @@ def store(conn: sqlite3.Connection, scraped_at: str, entries: list[dict], pages:
     return snapshot_id
 
 
-def run_once(args) -> bool:
+def scrape_season(args, conn: sqlite3.Connection, url: str, season: int | None) -> bool:
+    """Scrape one season's leaderboard (all pages) and store it as one snapshot."""
     scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    conn = connect(args.db)
+    label = f"season {season}: " if season is not None else ""
     pager = None
     try:
         pager = (BrowserPager(headed=args.headed, channel=args.browser_channel, next_control=args.next)
                  if args.browser else HttpPager())
-        entries, pages = scrape(pager, args.url, args.max_pages, args.page_delay, args.diagnose)
+        entries, pages = scrape(pager, url, args.max_pages, args.page_delay, args.diagnose)
         if not entries:
             raise RuntimeError("scrape returned no rows")
-        sid = store(conn, scraped_at, entries, pages)
-        log.info("snapshot %d: %d rows from %d page(s)", sid, len(entries), pages)
+        sid = store(conn, scraped_at, entries, pages, season=season)
+        log.info("%ssnapshot %d: %d rows from %d page(s)", label, sid, len(entries), pages)
         return True
     except KeyboardInterrupt:
         # Ctrl+C mid-scrape: the browser connection is already cut, and closing it politely
@@ -755,13 +832,24 @@ def run_once(args) -> bool:
         pager = None
         raise
     except Exception as exc:  # record failures so gaps in the data are explainable
-        store(conn, scraped_at, [], 0, error=str(exc))
-        log.error("scrape failed: %s", exc)
+        store(conn, scraped_at, [], 0, error=str(exc), season=season)
+        log.error("%sscrape failed: %s", label, exc)
         return False
     finally:
         if pager is not None:
             pager.close()
+
+
+def run_once(args) -> bool:
+    """Scrape every season asked for (--season), or the one in --url."""
+    seasons = parse_seasons(args.season) if args.season else [season_of(args.url)]
+    conn = connect(args.db)
+    try:
+        results = [scrape_season(args, conn, with_season(args.url, s) if s is not None else args.url, s)
+                   for s in seasons]
+    finally:
         conn.close()
+    return all(results)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -770,7 +858,10 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--once", action="store_true", help="scrape once and exit")
     mode.add_argument("--loop", type=int, metavar="SECONDS", default=120,
                       help="scrape repeatedly every SECONDS (default: every 120 seconds)")
-    p.add_argument("--url", default=DEFAULT_URL)
+    p.add_argument("--url", default=DEFAULT_URL, help=f"leaderboard address (default: {DEFAULT_URL})")
+    p.add_argument("--season", metavar="N",
+                   help="season(s) to scrape, e.g. 4, 3,4 or 1-4 (default: the season in --url). "
+                        "Each season is saved as its own snapshot")
     p.add_argument("--db", type=Path, default=DEFAULT_DB)
     p.add_argument("--max-pages", type=int, default=1000, help="safety limit on pages per run")
     p.add_argument("--page-delay", type=float, default=0.5, help="seconds between page requests")
@@ -799,7 +890,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.once:
             return 0 if run_once(args) else 1
-        log.info("scraping %s every %ds (Ctrl+C to stop)", args.url, args.loop)
+        which = f"season {args.season}" if args.season else args.url
+        log.info("scraping %s every %ds (Ctrl+C to stop)", which, args.loop)
         while True:
             started = time.monotonic()
             run_once(args)

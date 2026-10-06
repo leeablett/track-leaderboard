@@ -1,15 +1,17 @@
 # track-leaderboard
 
-Scrape and track the leaderboard at <https://vfm.bdynamicsstudio.com/leaderboard> on **Windows**.
+Scrape and track the leaderboard at <https://vfm.bdynamicsstudio.com/leaderboard?season=4> on **Windows**.
 
 Every run reads **all pages** of the leaderboard and saves them as one timestamped snapshot in
-`data\leaderboard.db`, so you build up a full history of ranks and scores.
+`data\leaderboard.db`, labelled with its **season**, so you build up a full history of ranks
+and scores for each season.
 
 ## Executive summary (for Jamie)
 
 **What it does:** every 2 minutes, a PC visits the public leaderboard, reads every page of it,
-and saves a copy with the time it was taken. Over days and weeks this builds a complete
-history, so we can see who is climbing or falling, by how much, and when. The website only
+and saves a copy with the time it was taken and the season it belongs to (season 4 now).
+Over days and weeks this builds a complete history for each season, so we can see who is
+climbing or falling, by how much, and when, and compare one season with another. The website only
 ever shows the leaderboard as it is right now.
 
 **The moving parts:**
@@ -31,7 +33,7 @@ flowchart LR
 | **Timer** | Windows Task Scheduler, or a window left open | Starts the scraper every 2 minutes, and starts it again automatically when the PC is switched on and someone logs in. |
 | **Scraper** (`scraper.py`) | The main program | Each run: opens the leaderboard, collects every row from every page, and stores the lot as one dated "snapshot". If a run fails, it records why, so gaps in the data can be explained. |
 | **Hidden browser** | Google's Chromium browser, controlled by the scraper | The website blocks simple programs and builds its table with JavaScript, so the scraper uses a real browser in the background. It reads page 1, clicks **Next** until there are no more pages, and hands the rows back. |
-| **Database** (`data\leaderboard.db`) | One file on the PC (SQLite) | Keeps every snapshot. One list records each run (when, how many rows, success or failure); the other holds every leaderboard line from every run. Nothing is overwritten, so the history only grows. |
+| **Database** (`data\leaderboard.db`) | One file on the PC (SQLite) | Keeps every snapshot, each labelled with its season. One list records each run (when, how many rows, success or failure); the other holds every leaderboard line from every run. Nothing is overwritten, so the history only grows. |
 | **Dashboard** (`dashboard.py`) | A web page that runs on the same PC | The quickest way to see what's happening: big movers, the top-5 race, score gains, the most changeable players, who joined or left, and whether the tracker is healthy. Updates itself every 2 minutes. |
 | **Getting answers out** | `query.py`, `export.py`, DB Browser | Three ways to dig deeper: ready-made one-line questions (top 10, a player's history, biggest climbers), CSV files for Excel, or a free point-and-click app. |
 
@@ -172,6 +174,42 @@ One player's rank and score over time:
 python export.py player "Some Name" -o player.csv
 ```
 
+These export the **current season** (the one the scraper last collected). For another season, add `--season`:
+
+```
+python export.py latest --season 3 -o season3.csv
+```
+
+## Seasons
+
+The scraper collects **season 4** by default. Each snapshot records its season, so seasons never mix.
+
+Collect a different season (e.g. when season 5 starts):
+
+```
+python scraper.py --season 5
+```
+
+Collect more than one season each run (each is saved as its own snapshot):
+
+```
+python scraper.py --season 4,5
+```
+
+Collect past seasons once, to fill in their history (e.g. seasons 1 to 3):
+
+```
+python scraper.py --once --season 1-3
+```
+
+See which seasons are in the database:
+
+```
+python query.py "SELECT * FROM seasons"
+```
+
+When a new season starts, change the Task Scheduler task's **Add arguments** to e.g. `scraper.py --season 5`.
+
 ## 7. Look inside the database
 
 All the data is in one file: `data\leaderboard.db`. There are two ways to look at it.
@@ -201,28 +239,43 @@ List what's in the database:
 python query.py --tables
 ```
 
-Top 10 right now:
+`latest` and `history` hold **every season**, with a `season` column. Add `WHERE season = 4`
+(or `AND season = 4`) to look at one season, as in these examples.
+
+Top 10 right now in season 4:
 
 ```
-python query.py "SELECT rank, name, score FROM latest LIMIT 10"
+python query.py "SELECT rank, name, score FROM latest WHERE season = 4 LIMIT 10"
 ```
 
 Find a player by part of their name:
 
 ```
-python query.py "SELECT rank, name, score FROM latest WHERE name LIKE '%smith%'"
+python query.py "SELECT season, rank, name, score FROM latest WHERE name LIKE '%smith%'"
 ```
 
-One player's rank and score over time:
+One player's rank and score over time in season 4:
 
 ```
-python query.py "SELECT scraped_at, rank, score FROM history WHERE name = 'Some Name' ORDER BY scraped_at"
+python query.py "SELECT scraped_at, rank, score FROM history WHERE season = 4 AND name = 'Some Name' ORDER BY scraped_at"
 ```
 
-How many runs have been saved, and when the first and last were:
+Each season: how many snapshots, when it was first and last collected, and how many players:
 
 ```
-python query.py "SELECT COUNT(*) AS runs, MIN(scraped_at) AS first, MAX(scraped_at) AS last FROM snapshots WHERE status = 'ok'"
+python query.py "SELECT * FROM seasons"
+```
+
+Final top 10 of a past season (its last snapshot):
+
+```
+python query.py "SELECT rank, name, score FROM latest WHERE season = 3 LIMIT 10"
+```
+
+One player's final rank in every season:
+
+```
+python query.py "SELECT season, rank, score FROM latest WHERE name = 'Some Name' ORDER BY season"
 ```
 
 Recent failed runs and why:
@@ -234,19 +287,19 @@ python query.py "SELECT scraped_at, error FROM snapshots WHERE status = 'error' 
 Biggest climbers over the last 24 hours:
 
 ```
-python query.py "SELECT l.name, f.rank AS was, l.rank AS now, f.rank - l.rank AS climbed FROM latest l JOIN history f ON f.name = l.name AND f.snapshot_id = (SELECT MIN(id) FROM snapshots WHERE status = 'ok' AND scraped_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-1 day')) ORDER BY climbed DESC LIMIT 10"
+python query.py "SELECT l.name, f.rank AS was, l.rank AS now, f.rank - l.rank AS climbed FROM latest l JOIN history f ON f.name = l.name AND f.snapshot_id = (SELECT MIN(id) FROM snapshots WHERE status = 'ok' AND season = 4 AND scraped_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-1 day')) WHERE l.season = 4 ORDER BY climbed DESC LIMIT 10"
 ```
 
 See every column the site shows (the `rank`, `name` and `score` columns are picked out; the rest are kept in `data`):
 
 ```
-python query.py "SELECT j.key AS column_name, j.value AS example FROM latest, json_each(latest.data) AS j WHERE latest.position = 1"
+python query.py "SELECT j.key AS column_name, j.value AS example FROM latest, json_each(latest.data) AS j WHERE latest.season = 4 AND latest.position = 1"
 ```
 
-Use one of those extra columns, for example `country`. Swap in a name from the list above:
+Use one of those extra columns, for example `win`. Swap in a name from the list above:
 
 ```
-python query.py "SELECT rank, name, json_extract(data, '$.country') AS country FROM latest"
+python query.py "SELECT rank, name, json_extract(data, '$.win') AS wins FROM latest WHERE season = 4"
 ```
 
 Save any result to a CSV file for Excel by adding `-o` and a file name:
@@ -363,8 +416,10 @@ it normally.
 
 ### Using the dashboard
 
-Use the **Compare over** buttons at the top (last hour, 6 hours, 24 hours, 7 days, all time)
-to change the period every widget looks at.
+Pick a **Season** at the top (it starts on the current season, and remembers your choice), and
+use the **Compare over** buttons (last hour, 6 hours, 24 hours, 7 days, all time) to change the
+period every widget looks at. For a finished season the periods count back from its last
+snapshot, so you can still see who moved most in its final day.
 
 | Widget | What it shows |
 |---|---|
@@ -411,7 +466,13 @@ The scraper is tested against mock leaderboards that use the common pagination s
 python tests/run_pagination_tests.py
 ```
 
-✅ You should see `PASS` on every line and `All passed.` at the end.
+Season support (database upgrade, several seasons, views, exports, dashboard) has its own check:
+
+```
+python tests/run_season_tests.py
+```
+
+✅ You should see `PASS` on every line and `All passed.` at the end of each.
 
 ## Updating the scraper
 
@@ -463,6 +524,7 @@ never touched by an update.
 | `--once` | Scrape once and stop |
 | *(none)* | Scrape every 2 minutes until you press **Ctrl+C** |
 | `--loop 300` | Scrape every 300 seconds instead |
+| `--season 5` | Season(s) to collect: `5`, `4,5` or `1-3` (default: 4, from the address) |
 | `--no-browser` | Use plain web requests instead of a browser (this site needs the browser, which is the default) |
 | `--headed` | Show the browser window while it works |
 | `--browser-channel msedge` | Which browser to use: `auto` (default), `chromium`, `msedge` or `chrome` |
@@ -470,6 +532,7 @@ never touched by an update.
 | `--max-pages 1000` | Safety limit on pages per run (a warning is logged if it's reached) |
 | `--next ">>"` | The control that goes to the next page: its text (`>>` also matches `»`) or a CSS selector. Normally found automatically |
 | `--diagnose` | Save every page (and a screenshot) to `data\debug` and log how each next page was found |
+| `--url ADDRESS` | A different leaderboard address (default: `https://vfm.bdynamicsstudio.com/leaderboard?season=4`) |
 | `--db PATH` | Use a different database file |
 | `-v` | Show detailed logs |
 
@@ -497,13 +560,16 @@ never touched by an update.
 
 One SQLite file, `data\leaderboard.db`. See [Look inside the database](#7-look-inside-the-database) for how to open it.
 
-Two handy **views** are built on top of the tables: `latest` (the most recent successful run) and `history` (every successful run). `query.py` creates them the first time you run it.
+Each run saves one **snapshot** per season it collects; each snapshot has one **entry** per
+leaderboard line. A season is a property of the snapshot, so every entry belongs to exactly one
+season through its snapshot.
 
-**`snapshots`**: one row per scrape run
+**`snapshots`**: one row per season per scrape run
 
 | column | meaning |
 |---|---|
 | `id` | snapshot id |
+| `season` | which season this is (empty for data collected before seasons were recorded) |
 | `scraped_at` | time of the run (UTC) |
 | `pages`, `row_count` | how much was scraped |
 | `status`, `error` | `ok` or `error` (failed runs are recorded too) |
@@ -517,6 +583,17 @@ Two handy **views** are built on top of the tables: `latest` (the most recent su
 | `page`, `position` | page number and overall order on the site |
 | `rank`, `name`, `score` | the main fields |
 | `data` | every column exactly as shown on the site |
+
+**Views** (ready-made queries, kept up to date automatically):
+
+| view | what it holds |
+|---|---|
+| `latest` | the most recent successful snapshot **of each season**, with a `season` column |
+| `history` | every successful snapshot, with a `season` column |
+| `seasons` | one row per season: number of snapshots, first and last collected, number of players |
+
+Databases from older versions are upgraded automatically the next time the scraper runs:
+a `season` column is added and existing data is kept (with the season left empty).
 
 At one run every 2 minutes, the database grows by about 720 snapshots a day (tens of MB).
 

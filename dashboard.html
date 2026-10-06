@@ -55,6 +55,8 @@ h1 { font-size: 20px; font-weight: 600; margin: 0; }
 .seg button:hover { background: var(--wash); }
 .seg button[aria-pressed="true"] { color: var(--ink); font-weight: 600; background: var(--wash); }
 .refresh { margin-left: auto; color: var(--muted); font-size: 12px; }
+.select { font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--ring); border-radius: 8px; padding: 6px 28px 6px 10px; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; transition: opacity .2s; }
 .grid.loading { opacity: .6; }
 .card { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 16px 18px; min-width: 0; }
@@ -77,6 +79,7 @@ h1 { font-size: 20px; font-weight: 600; margin: 0; }
 .status.good i { background: var(--good); }
 .status.warning i { background: var(--warning); color: #0b0b0b; }
 .status.critical i { background: var(--critical); }
+.status.past i { background: var(--axis); color: var(--ink); }
 
 /* bar rows (movers, gainers) */
 .rows { display: grid; gap: 2px; }
@@ -144,8 +147,10 @@ td.spark svg { width: 100%; max-width: 140px; display: block; }
     <h1>Leaderboard Tracker</h1>
     <span class="sub" id="subtitle">Loading…</span>
   </header>
-  <div class="filters" role="toolbar" aria-label="Time period">
-    <span class="label">Compare over</span>
+  <div class="filters" role="toolbar" aria-label="Season and time period">
+    <label class="label" for="season">Season</label>
+    <select id="season" class="select"><option value="current">Current</option></select>
+    <span class="label" style="margin-left:8px">Compare over</span>
     <div class="seg" id="windows">
       <button data-w="1h">Last hour</button>
       <button data-w="6h">6 hours</button>
@@ -163,7 +168,7 @@ td.spark svg { width: 100%; max-width: 140px; display: block; }
 "use strict";
 const REFRESH_MS = 120000;
 const SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5"];
-let state = { window: "24h", data: null };
+let state = { window: "24h", season: "current", data: null };
 
 // ---------- helpers (all text goes in via textContent; names come from the website)
 function h(tag, attrs, ...kids) {
@@ -228,15 +233,21 @@ function kpis(d) {
   else st = ["critical", "✕", "Stopped"];
   const pct = k.runs_24h ? (100 * k.ok_24h / k.runs_24h) : null;
   const tile = (label, value, ...detail) => h("div", { class: "tile" }, h("div", { class: "k" }, label), h("div", { class: "v" }, value), h("div", { class: "d" }, ...detail));
+  if (d.is_current === false) {
+    st = ["past", "–", "Past season, not being collected"];
+  }
   const body = h("div", { class: "kpis" },
     tile("Players on the board", num(k.players),
       k.players_change == null ? "" : (k.players_change === 0 ? "no change" : signed(k.players_change)) + " over " + d.window_label),
     tile("Last update", ago(k.last_ok),
       h("span", { class: "status " + st[0], title: k.last_run.error || "" }, h("i", { "aria-hidden": "true" }, st[1]), st[2])),
-    tile("Runs in the last 24 hours", num(k.ok_24h) + " / " + num(k.runs_24h),
-      pct == null ? "no runs" : num(pct, 1) + "% successful"),
+    d.is_current === false
+      ? tile("Season " + d.season, "Finished", "or not tracked right now")
+      : tile("Runs in the last 24 hours", num(k.ok_24h) + " / " + num(k.runs_24h),
+          pct == null ? "no runs" : num(pct, 1) + "% successful"),
     tile("History collected", num(k.snapshots), "snapshots since " + when(k.since)));
-  const desc = k.last_run.status === "error" ? "Latest error: " + (k.last_run.error || "unknown") : "Is the tracker running, and how much data do we have?";
+  const desc = d.is_current === false ? "How much data was collected for this season?" :
+    k.last_run.status === "error" ? "Latest error: " + (k.last_run.error || "unknown") : "Is the tracker running, and how much data do we have?";
   return card("At a glance", desc, body, true);
 }
 
@@ -399,22 +410,39 @@ function churn(d) {
 }
 
 // ---------- page
+const seasonName = s => s === null || s === undefined ? "Unknown" : "Season " + s;
+function fillSeasons(d) {
+  const sel = document.getElementById("season");
+  const list = d.seasons || [];
+  sel.parentElement.style.display = "";
+  sel.style.display = list.length ? "" : "none";
+  document.querySelector('label[for="season"]').style.display = list.length ? "" : "none";
+  const opts = [h("option", { value: "current" }, "Current" + (d.season != null && state.season === "current" ? ` (season ${d.season})` : ""))];
+  for (const x of list) opts.push(h("option", { value: x.season === null ? "none" : String(x.season) }, seasonName(x.season)));
+  sel.replaceChildren(...opts);
+  sel.value = state.season;
+}
 function render() {
   const d = state.data, main = document.getElementById("main");
   if (!d) return;
+  if (!d.error) fillSeasons(d);
   if (d.error) { main.replaceChildren(h("div", { class: "notice" }, "Couldn't read the database: ", d.error)); return; }
   if (d.empty) {
     const lr = d.last_run;
     main.replaceChildren(h("div", { class: "notice" },
-      h("h2", {}, "No leaderboard data yet"),
-      h("p", {}, "Run the scraper at least once: ", h("code", {}, "python scraper.py --once --browser")),
+      h("h2", {}, (d.seasons || []).length && state.season !== "current"
+        ? `No data for ${seasonName(d.season)} yet` : "No leaderboard data yet"),
+      (d.seasons || []).length && state.season !== "current"
+        ? h("p", {}, "Pick another season above, or scrape this one: ", h("code", {}, `python scraper.py --once --season ${d.season}`))
+        : h("p", {}, "Run the scraper at least once: ", h("code", {}, "python scraper.py --once")),
       lr && lr.status === "error" ? h("p", {}, "The last run failed: ", lr.error) : null,
       h("p", {}, "This page checks again every 2 minutes.")));
     document.getElementById("subtitle").textContent = "Waiting for data";
     return;
   }
   document.getElementById("subtitle").textContent =
-    `Latest snapshot ${when(d.latest_at)} · comparing with ${when(d.base_at)}`;
+    (d.season != null ? seasonName(d.season) + " · " : "") +
+    `latest snapshot ${when(d.latest_at)} · comparing with ${when(d.base_at)}`;
   main.replaceChildren(h("div", { class: "grid", id: "grid" },
     kpis(d), movers(d), gainers(d), race(d), volatile(d), churn(d)));
 }
@@ -422,7 +450,8 @@ async function load() {
   const grid = document.getElementById("grid");
   if (grid) grid.classList.add("loading");
   try {
-    const res = await fetch("/api/data?window=" + encodeURIComponent(state.window), { cache: "no-store" });
+    const res = await fetch("/api/data?window=" + encodeURIComponent(state.window) +
+                            "&season=" + encodeURIComponent(state.season), { cache: "no-store" });
     state.data = await res.json();
     document.getElementById("refresh").textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " · refreshes every 2 minutes";
   } catch (e) {
@@ -438,6 +467,12 @@ function setWindow(w) {
   try { localStorage.setItem("lb-window", w); } catch (e) {}
   load();
 }
+document.getElementById("season").addEventListener("change", e => {
+  state.season = e.target.value;
+  try { localStorage.setItem("lb-season", state.season); } catch (err) {}
+  load();
+});
+try { state.season = localStorage.getItem("lb-season") || "current"; } catch (e) {}
 document.getElementById("windows").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setWindow(b.dataset.w); });
 let saved = null;
 try { saved = localStorage.getItem("lb-window"); } catch (e) {}

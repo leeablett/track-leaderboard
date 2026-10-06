@@ -3,7 +3,8 @@
 
 Usage:
     python query.py "SELECT COUNT(*) FROM snapshots"
-    python query.py "SELECT * FROM latest LIMIT 10"
+    python query.py "SELECT * FROM latest WHERE season = 4 LIMIT 10"
+    python query.py "SELECT * FROM seasons"
     python query.py "SELECT * FROM latest" -o latest.csv     # save as CSV instead
     python query.py --tables                                  # list tables, views and columns
 """
@@ -17,19 +18,6 @@ import sys
 from pathlib import Path
 
 from scraper import DEFAULT_DB, connect
-
-# Handy views, created if missing. Plain SELECTs; they never change stored data.
-VIEWS = """
-CREATE VIEW IF NOT EXISTS latest AS
-    SELECT e.rank, e.name, e.score, e.page, e.position, s.scraped_at, e.data
-    FROM entries e JOIN snapshots s ON s.id = e.snapshot_id
-    WHERE s.id = (SELECT MAX(id) FROM snapshots WHERE status = 'ok')
-    ORDER BY e.position;
-CREATE VIEW IF NOT EXISTS history AS
-    SELECT s.id AS snapshot_id, s.scraped_at, e.rank, e.name, e.score, e.page, e.position, e.data
-    FROM entries e JOIN snapshots s ON s.id = e.snapshot_id
-    WHERE s.status = 'ok';
-"""
 
 
 def print_table(cols: list[str], rows: list[tuple], max_width: int = 40) -> None:
@@ -57,8 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.db.exists():
         print(f"No database at {args.db}. Run the scraper first.", file=sys.stderr)
         return 1
-    conn = connect(args.db)  # makes sure tables exist
-    conn.executescript(VIEWS)
+    conn = connect(args.db)  # makes sure tables and views exist, and are up to date
 
     if args.tables:
         for name, kind in conn.execute(

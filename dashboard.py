@@ -27,7 +27,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
 
-from scraper import DEFAULT_DB, connect, store
+from scraper import DEFAULT_DB, connect, current_season, store
 
 HERE = Path(__file__).parent
 PAGE = HERE / "dashboard.html"
@@ -70,24 +70,51 @@ def snapshot_rows(conn: sqlite3.Connection, sid: int) -> dict[str, dict]:
     return out
 
 
-def build(conn: sqlite3.Connection, window: str) -> dict:
+def list_seasons(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT season, COUNT(*), MAX(scraped_at) FROM snapshots WHERE status = 'ok' "
+        "GROUP BY season ORDER BY season IS NULL, season DESC")
+    return [{"season": r[0], "snapshots": r[1], "last": r[2]} for r in rows]
+
+
+def has_seasons(conn: sqlite3.Connection) -> bool:
+    return "season" in {r[1] for r in conn.execute("PRAGMA table_info(snapshots)")}
+
+
+def build(conn: sqlite3.Connection, window: str, season: str = "current") -> dict:
     label, span = WINDOWS.get(window, WINDOWS["24h"])
     now = datetime.now(timezone.utc)
 
+    # Which season to show. A database not yet upgraded by the new scraper has no seasons;
+    # then every snapshot counts (the dashboard only reads, so it can't upgrade it itself).
+    if has_seasons(conn):
+        seasons = list_seasons(conn)
+        if season in ("current", "", None):
+            chosen = current_season(conn)
+        elif season == "none":
+            chosen = None
+        else:
+            chosen = int(season)
+        sf, sp = " AND season IS ?", (chosen,)  # "IS" also matches NULL (season unknown)
+    else:
+        seasons, chosen, sf, sp = [], None, "", ()
+
     latest = conn.execute(
-        "SELECT id, scraped_at FROM snapshots WHERE status = 'ok' ORDER BY id DESC LIMIT 1"
+        f"SELECT id, scraped_at FROM snapshots WHERE status = 'ok'{sf} ORDER BY id DESC LIMIT 1", sp
     ).fetchone()
     last_any = conn.execute(
-        "SELECT scraped_at, status, error FROM snapshots ORDER BY id DESC LIMIT 1"
+        f"SELECT scraped_at, status, error FROM snapshots WHERE 1=1{sf} ORDER BY id DESC LIMIT 1", sp
     ).fetchone()
     if not latest:
-        return {"empty": True, "last_run": last_any and {
+        return {"empty": True, "season": chosen, "seasons": seasons, "last_run": last_any and {
             "at": last_any[0], "status": last_any[1], "error": last_any[2]}}
 
     latest_id, latest_at = latest
-    cutoff = iso(now - span) if span else ""
+    # Periods count back from the season's latest snapshot: the same as "now" for the current
+    # season, and still meaningful for a finished one.
+    cutoff = iso(datetime.fromisoformat(latest_at) - span) if span else ""
     window_ids = [r[0] for r in conn.execute(
-        "SELECT id FROM snapshots WHERE status = 'ok' AND scraped_at >= ? ORDER BY id", (cutoff,))]
+        f"SELECT id FROM snapshots WHERE status = 'ok' AND scraped_at >= ?{sf} ORDER BY id", (cutoff, *sp))]
     if not window_ids:  # nothing in the window: fall back to the latest snapshot alone
         window_ids = [latest_id]
     base_id = window_ids[0]
@@ -100,10 +127,10 @@ def build(conn: sqlite3.Connection, window: str) -> dict:
     # --- 1. headline KPIs
     day_ago = iso(now - timedelta(hours=24))
     runs_24h, ok_24h = conn.execute(
-        "SELECT COUNT(*), COALESCE(SUM(status = 'ok'), 0) FROM snapshots WHERE scraped_at >= ?",
-        (day_ago,)).fetchone()
+        f"SELECT COUNT(*), COALESCE(SUM(status = 'ok'), 0) FROM snapshots WHERE scraped_at >= ?{sf}",
+        (day_ago, *sp)).fetchone()
     total, since = conn.execute(
-        "SELECT COUNT(*), MIN(scraped_at) FROM snapshots WHERE status = 'ok'").fetchone()
+        f"SELECT COUNT(*), MIN(scraped_at) FROM snapshots WHERE status = 'ok'{sf}", sp).fetchone()
     kpi = {
         "players": len(now_rows),
         "players_change": len(now_rows) - len(base_rows) if comparable else None,
@@ -180,6 +207,9 @@ def build(conn: sqlite3.Connection, window: str) -> dict:
 
     return {
         "empty": False,
+        "season": chosen, "seasons": seasons,
+        # a past season isn't being collected any more: the page shouldn't call that "Stopped"
+        "is_current": not seasons or chosen == current_season(conn),
         "window": window, "window_label": label,
         "generated_at": iso(now), "base_at": base_at, "latest_at": latest_at,
         "comparable": comparable,
@@ -195,11 +225,20 @@ def build(conn: sqlite3.Connection, window: str) -> dict:
 
 # --------------------------------------------------------------------------- demo data
 
-def make_demo(path: Path, days: float = 3, every_min: int = 2, players: int = 150) -> None:
-    """Fill a database with realistic made-up leaderboard history."""
+def make_demo(path: Path, players: int = 150) -> None:
+    """Fill a database with realistic made-up history: season 3 (finished, sampled every
+    30 minutes) and season 4 (the last 3 days, every 2 minutes)."""
     if path.exists():
         path.unlink()
-    rng = random.Random(42)
+    conn = connect(path)
+    now = datetime.now(timezone.utc)
+    simulate(conn, 3, now - timedelta(days=7), now - timedelta(days=3, hours=1), 30, players, seed=3)
+    simulate(conn, 4, now - timedelta(days=3), now, 2, players, seed=42)
+    conn.close()
+
+
+def simulate(conn, season: int, start: datetime, end: datetime, every_min: int, players: int, seed: int) -> None:
+    rng = random.Random(seed)
     first = ["Alex", "Sam", "Jo", "Chris", "Pat", "Max", "Robin", "Kim", "Lee", "Ash", "Jamie", "Drew",
              "Charlie", "Taylor", "Morgan", "Casey", "Riley", "Jordan", "Quinn", "Avery"]
     last = ["Racing", "Speed", "Motors", "GP", "Velocity", "Apex", "Turbo", "Drift", "Pitlane", "Grid"]
@@ -208,28 +247,26 @@ def make_demo(path: Path, days: float = 3, every_min: int = 2, players: int = 15
     score = {n: rng.uniform(1000, 9000) for n in names}
     active = set(names[:players])
     waiting = names[players:]
-    conn = connect(path)
-    start = datetime.now(timezone.utc) - timedelta(days=days)
-    steps = int(days * 24 * 60 / every_min)
+    steps = int((end - start).total_seconds() / 60 / every_min)
+    k = every_min / 2  # keep the same pace per hour whatever the sampling interval
     for i in range(steps + 1):
         t = start + timedelta(minutes=i * every_min)
         if rng.random() < 0.01:
-            store(conn, iso(t), [], 0, error="Timeout while loading page 3")
+            store(conn, iso(t), [], 0, error="Timeout while loading page 3", season=season)
             continue
         for n in active:
-            burst = 25 if rng.random() < 0.002 else 1  # occasional hot streak
-            score[n] += max(0.0, rng.gauss(pace[n], 1.5)) * burst
-        if waiting and rng.random() < 0.004:
+            burst = 25 if rng.random() < 0.002 * k else 1  # occasional hot streak
+            score[n] += max(0.0, rng.gauss(pace[n], 1.5)) * burst * k
+        if waiting and rng.random() < 0.004 * k:
             active.add(waiting.pop())
-        if len(active) > 20 and rng.random() < 0.002:
+        if len(active) > 20 and rng.random() < 0.002 * k:
             active.discard(rng.choice(sorted(active)))
         order = sorted(active, key=lambda n: -score[n])
         entries = [{"page": p // 25 + 1, "position": p + 1, "rank": p + 1, "name": n,
                     "score": round(score[n], 1),
                     "data": {"rank": str(p + 1), "player": n, "points": f"{score[n]:,.1f}"}}
                    for p, n in enumerate(order)]
-        store(conn, iso(t), entries, (len(entries) + 24) // 25)
-    conn.close()
+        store(conn, iso(t), entries, (len(entries) + 24) // 25, season=season)
 
 
 # --------------------------------------------------------------------------- server
@@ -251,14 +288,16 @@ def make_handler(db: Path):
                 self._send(200, json.dumps({"app": "track-leaderboard", "pid": os.getpid(),
                                             "db": str(db)}).encode(), "application/json")
             elif url.path == "/api/data":
-                window = parse_qs(url.query).get("window", ["24h"])[0]
+                query = parse_qs(url.query)
+                window = query.get("window", ["24h"])[0]
+                season = query.get("season", ["current"])[0]
                 try:
                     if not db.exists():
                         data = {"empty": True, "last_run": None}
                     else:
                         conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=10)
                         try:
-                            data = build(conn, window)
+                            data = build(conn, window, season)
                         finally:
                             conn.close()
                     self._send(200, json.dumps(data).encode(), "application/json")
@@ -328,7 +367,9 @@ def main(argv: list[str] | None = None) -> int:
     db = args.db
     if args.demo:
         db = DEMO_DB
-        if not db.exists():
+        outdated = db.exists() and "season" not in {
+            r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(snapshots)")}
+        if not db.exists() or outdated:
             print("Creating demo data (takes a few seconds)...")
             make_demo(db)
     elif not db.exists():
