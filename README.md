@@ -32,23 +32,23 @@ flowchart LR
 |---|---|---|
 | **Timer** | Windows Task Scheduler, or a window left open | Starts the scraper every 2 minutes, and starts it again automatically when the PC is switched on and someone logs in. |
 | **Scraper** (`scraper.py`) | The main program | Each run: opens the leaderboard, collects every row from every page, and stores the lot as one dated "snapshot". If a run fails, it records why, so gaps in the data can be explained. |
-| **Hidden browser** | Google's Chromium browser, controlled by the scraper | The website blocks simple programs and builds its table with JavaScript, so the scraper uses a real browser in the background. It reads page 1, clicks **Next** until there are no more pages, and hands the rows back. |
+| **Hidden browser** | Chromium, or Microsoft Edge if Chromium isn't installed, controlled by the scraper | The website blocks simple programs and builds its table with JavaScript, so the scraper uses a real browser in the background. It reads page 1, clicks the site's **>>** button until there are no more pages, and hands the rows back. |
 | **Database** (`data\leaderboard.db`) | One file on the PC (SQLite) | Keeps every snapshot, each labelled with its season. One list records each run (when, how many rows, success or failure); the other holds every leaderboard line from every run. Nothing is overwritten, so the history only grows. |
 | **Dashboard** (`dashboard.py`) | A web page that runs on the same PC | The quickest way to see what's happening: big movers, the top-5 race, score gains, the most changeable players, who joined or left, and whether the tracker is healthy. Updates itself every 2 minutes. |
 | **Getting answers out** | `query.py`, `export.py`, DB Browser | Three ways to dig deeper: ready-made one-line questions (top 10, a player's history, biggest climbers), CSV files for Excel, or a free point-and-click app. |
 
 **How a single run works:**
 1. The timer starts the scraper.
-2. The scraper opens the hidden browser and loads the leaderboard.
-3. It reads the table, clicks **Next**, and repeats until the last page.
-4. It saves all the rows as one snapshot with the current time.
-5. It closes the browser and waits for the next run. Each run takes a few seconds.
+2. The scraper opens the hidden browser and loads the leaderboard for the season (season 4).
+3. It reads the table, clicks **>>**, and repeats until the last page. Each player's rank, name, rating, wins, losses and draws are kept.
+4. It saves all the rows as one snapshot with the current time and the season.
+5. It closes the browser and waits for the next run. A run takes about half a minute: a second or two per page, plus a short wait on the last page to be sure there's no next one.
 
 **What to be aware of:**
 - **It only collects while the PC is on.** If the PC is off or asleep, those minutes are missed and can't be recovered. For an unbroken record it needs a machine that stays on.
 - **The website doesn't welcome automated visitors.** It has a firewall that blocks simple programs. We get past it by using a normal browser, but the site's owners could tighten this or object. Asking them for permission, or for a data feed, would be the most reliable long-term option.
 - **Website changes can break it.** If the site's layout changes, the scraper records an error rather than saving bad data, and will need a small fix.
-- **It's not been run against the live site yet.** It's been tested against realistic copies of the site; the first live run will confirm it.
+- **A new season needs one change.** The scraper collects season 4. When season 5 starts, its start command needs `--season 5` (see [Seasons](#7-seasons)).
 - **Storage grows steadily**, roughly tens of MB a day. That's fine for months on a normal PC, and old data can be trimmed if needed.
 
 ---
@@ -113,14 +113,20 @@ python scraper.py --once -v
 ✅ You should see one line per page, then a summary, like:
 
 ```
-page 1 -> 2 via Next label: input ">>" [in pagination]
+page 1 -> 2 via Next label: button ">>" class="player-name" [in pagination]
 ```
 
 ```
-INFO read 12 page(s), 300 rows; stopped because the Next label is disabled (last page)
+INFO read 12 page(s), 1150 rows; stopped because Next no longer changes the page, so page 12 is the last
 ```
 
-Check the page count matches the website (click `>>` until the last page to count).
+```
+INFO season 4: snapshot 1: 1150 rows from 12 page(s)
+```
+
+Check the page count matches the website (click `>>` until the last page to count). The last
+page takes about 30 seconds: the site's `>>` stays clickable there, so the scraper waits to be
+sure nothing changes.
 
 To watch the browser while it works, add `--headed`:
 
@@ -180,7 +186,7 @@ These export the **current season** (the one the scraper last collected). For an
 python export.py latest --season 3 -o season3.csv
 ```
 
-## Seasons
+## 7. Seasons
 
 The scraper collects **season 4** by default. Each snapshot records its season, so seasons never mix.
 
@@ -210,7 +216,7 @@ python query.py "SELECT * FROM seasons"
 
 When a new season starts, change the Task Scheduler task's **Add arguments** to e.g. `scraper.py --season 5`.
 
-## 7. Look inside the database
+## 8. Look inside the database
 
 All the data is in one file: `data\leaderboard.db`. There are two ways to look at it.
 Both are safe to use while the scraper is running.
@@ -220,8 +226,9 @@ Both are safe to use while the scraper is running.
 1. Download and install **DB Browser for SQLite** from <https://sqlitebrowser.org/dl/>. The standard Windows installer is fine.
 2. Open it, click **Open Database Read Only…** (in the drop-down next to **Open Database**), and choose `D:\github\track-leaderboard\data\leaderboard.db`.
 3. Click the **Browse Data** tab and pick a table or view from the **Table** drop-down:
-   - `latest`: the current leaderboard
+   - `latest`: the most recent leaderboard of each season (use the filter box on the `season` column)
    - `history`: every entry from every run
+   - `seasons`: one line per season (how much data, and when)
    - `snapshots`: one row per run, including failed ones
 4. To run your own questions, use the **Execute SQL** tab: paste any query from Option B (without the `python query.py` part and the outer double quotes) and press **F5**.
 5. To save what you're looking at, use **File → Export → Table(s) as CSV file…**
@@ -310,7 +317,7 @@ python query.py "SELECT * FROM history WHERE name = 'Some Name'" -o some-name.cs
 
 Times in `scraped_at` are UTC (UK winter time; one hour behind UK summer time).
 
-## 8. Dashboard
+## 9. Dashboard
 
 A live page with the main analysis, viewed in your web browser at <http://localhost:8050>.
 
@@ -404,7 +411,7 @@ the task and choose **Run**.
 
 ### Demo data
 
-Want to see it before you have real data? This fills `data\demo.db` with three days of made-up history:
+Want to see it before you have real data? This fills `data\demo.db` with made-up history for two seasons (3 and 4), so you can try the season picker too:
 
 ```
 python dashboard.py --demo
@@ -423,9 +430,9 @@ snapshot, so you can still see who moved most in its final day.
 
 | Widget | What it shows |
 |---|---|
-| **At a glance** | Players on the board, when the last update was (with a ✓ Up to date / ! Delayed / ✕ Stopped light), how many runs worked in the last 24 hours, and how much history has been collected. |
+| **At a glance** | Players on the board, when the last update was (with a ✓ Up to date / ! Delayed / ✕ Stopped light), how many runs worked in the last 24 hours, and how much history has been collected. For a past season it says *Past season, not being collected* instead. |
 | **Big movers** | The 8 biggest climbers and 8 biggest fallers over the period, with their rank then → now. |
-| **Biggest score gains** | Who added the most points over the period. A good guide to who's most active. |
+| **Biggest score gains** | Whose rating went up most over the period. A good guide to who's most active. |
 | **Top 5 race** | A chart of how today's top 5 have swapped places over the period. Hover for exact ranks at any time, or click **Show as table**. |
 | **Most changeable** | Players in the top 100 whose rank swung the most, with their best, worst and a mini trend line. |
 | **New and gone** | Players who joined the leaderboard or dropped off it during the period. |
@@ -459,8 +466,9 @@ python dashboard.py --port 8051
 
 ## Checking the scraper still works (for developers)
 
-The scraper is tested against mock leaderboards that use the common pagination styles
-("Next »" buttons, numbered pages, icon-only arrows, "Load more", slow-loading pages, 250 pages):
+The scraper is tested against mock leaderboards: a copy of this site's own layout (the
+`<<  Page N  >>` row and `#1 | name` cells), plus other common pagination styles ("Next »"
+buttons, numbered pages, icon-only arrows, form buttons, "Load more", slow pages, 250 pages):
 
 ```
 python tests/run_pagination_tests.py
@@ -551,14 +559,16 @@ never touched by an update.
 | `the site's firewall blocked the browser too` | Try adding `--headed`. If it's still blocked, the site doesn't allow automated access; contact the site owner. |
 | `no leaderboard <table> found` | The page was saved to `data\debug\page_1.html`. Send that file over so the scraper can be adjusted. |
 | Not all pages are read | Every run logs a line like `read 12 page(s), 300 rows; stopped because the Next label is disabled (last page)`. Check the page count matches the website. If it doesn't, run `python scraper.py --once --diagnose`, then send the log and the files in `data\debug` (a screenshot and HTML of each page). |
-| `stopped because page N only repeated rows already read (the same rows as page X)` | The scraper thought page N showed rows it had already saved, which normally means the end of the leaderboard. It now waits longer and clicks Next again before deciding this, so update first (`git pull`). If it still stops early: **X = N−1** means the page didn't change after clicking (too slow, or the click didn't register); **X = 1** means the site jumped back to page 1. Run with `--diagnose` and send the log and `data\debug` files. |
-| It clicks the wrong control (e.g. `the same rows as page 1`) | Tell it which control goes to the next page. For this site that's the `>>` arrow: `python scraper.py --once --next ">>"`. Use the same `--next ">>"` on your `--loop` command and in Task Scheduler's **Add arguments**. With `-v`, each page's log line shows what was clicked (e.g. `page 2 -> 3 via Next label: a ">>" [in pagination]`). |
+| `stopped because Next no longer changes the page, so page N is the last` | Normal: that's how this site's last page looks. Check N matches the site's last page. |
+| `stopped because page N only repeated rows already read (the same rows as page X)` | Paging went wrong: page N showed rows already saved. **X = 1** means the site jumped back to page 1 (a wrong button was clicked); otherwise the page didn't change. The log then lists the `pagination controls on the page`: send that line, or run with `--diagnose` and send the log and `data\debug` files. |
+| It clicks the wrong control | Tell it which control goes to the next page: `python scraper.py --once --next ">>"`, and use the same `--next ">>"` in your normal start command and in Task Scheduler's **Add arguments**. With `-v`, each page's log line shows what was clicked. |
+| Player names start with `#1`, or every player appears twice | Data saved by an older version. Update (`git pull`), stop the scraper, delete `data\leaderboard.db` and start again. |
 | `WARNING the site says there are N pages but only M were read` | The scraper saw the site's own page count ("Page 1 of 37" or "1–25 of 912") and read fewer. Run with `--diagnose` as above and send the results. |
 | `WARNING stopped at --max-pages` | The leaderboard has more pages than the safety limit. Add e.g. `--max-pages 5000`. |
 
 ## How the data is stored
 
-One SQLite file, `data\leaderboard.db`. See [Look inside the database](#7-look-inside-the-database) for how to open it.
+One SQLite file, `data\leaderboard.db`. See [Look inside the database](#8-look-inside-the-database) for how to open it.
 
 Each run saves one **snapshot** per season it collects; each snapshot has one **entry** per
 leaderboard line. A season is a property of the snapshot, so every entry belongs to exactly one
@@ -581,8 +591,8 @@ season through its snapshot.
 |---|---|
 | `snapshot_id` | which run it came from |
 | `page`, `position` | page number and overall order on the site |
-| `rank`, `name`, `score` | the main fields |
-| `data` | every column exactly as shown on the site |
+| `rank`, `name`, `score` | the main fields: rank from the `#1` beside the name, the player's name, and their rating |
+| `data` | every column as shown on the site (`rank`, `player`, `rating`, `win`, `loss`, `draw`) |
 
 **Views** (ready-made queries, kept up to date automatically):
 
@@ -595,6 +605,8 @@ season through its snapshot.
 Databases from older versions are upgraded automatically the next time the scraper runs:
 a `season` column is added and existing data is kept (with the season left empty).
 
-At one run every 2 minutes, the database grows by about 720 snapshots a day (tens of MB).
+At one run every 2 minutes, the database grows by about 720 snapshots a day for each season
+collected (tens of MB). To start again from nothing, stop the scraper and delete
+`data\leaderboard.db`; a new one is created on the next run.
 
 Using Mac or Linux? See [SETUP.md](SETUP.md).
