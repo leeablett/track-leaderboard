@@ -28,6 +28,7 @@ CASES = [  # (style, use browser, expected rows)
     ("divpager", True, 35),        # "<< Page N >>" made of clickable <div>s; a "1 2 3" decoy group
     ("blazor", True, 35),          # the real site's markup: "<< Page N >>" buttons in a row of the table
     ("blazor_busy", True, 35),     # same, with a connection that never lets the network go idle
+    ("blazor_big", True, 1200),    # same, full size: 100 players a page, 12 pages
     ("formpost", True, 35),        # like the real site: "<< Page N >>" form buttons that reload the page
     ("decoy", True, 35),           # ">>" in the pager; a "›" above the table resets to page 1
     ("iconnext", True, 35),        # ">>" is an icon with no text; only pages 1-3 numbered

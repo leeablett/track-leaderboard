@@ -469,6 +469,10 @@ TABLE_STATE_JS = """() => {
 }"""
 
 
+# Addresses of downloads the scraper never needs (images, fonts, video).
+SKIP_DOWNLOADS = re.compile(r"\.(png|jpe?g|gif|webp|avif|svg|ico|bmp|woff2?|ttf|otf|eot|mp4|webm|mp3|wav)(\?|#|$)", re.I)
+
+
 # Resolves once the table has looked the same for 300 ms (checked every 50 ms), or after 3 s.
 TABLE_STABLE_JS = f"""async () => {{
   const state = {TABLE_STATE_JS.strip()};
@@ -497,6 +501,7 @@ class BrowserPager:
 
         self.next_control = next_control  # --next: label or CSS selector of the next-page control
 
+        started = time.monotonic()
         self._pw = sync_playwright().start()
         tried = []
         for ch in (self.CHANNELS if channel == "auto" else (channel,)):
@@ -514,10 +519,32 @@ class BrowserPager:
                 "'python -m playwright install chromium'. Tried -> " + " | ".join(tried)
             )
         self.page = self.browser.new_page(viewport={"width": 1366, "height": 900})
+        # Images, fonts and video aren't needed to read the table; skipping them saves work,
+        # which matters on older PCs. (Only matching addresses are intercepted.)
+        self.page.route(SKIP_DOWNLOADS, lambda route: route.abort())
+        self.launch_seconds = time.monotonic() - started
+        # How long the slowest page took to appear after clicking Next, learned as we go and
+        # kept between runs. Waits for "has the page changed?" scale with it (see _wait_time).
+        self.slowest: float | None = None
+        self.runs = 0
+        self.reset()
+
+    def reset(self):
+        """Forget the previous scrape (the browser itself is kept for the next run)."""
         self.status = None
         self.visited: set[str] = set()
         self.clicked = False  # paging by clicking; no control found afterwards means the end
         self.stop_reason = ""
+        self.runs += 1
+
+    def _wait_time(self, factor: float, low: float, high: float = 10.0) -> int:
+        """Milliseconds to wait for a page change: a few times the slowest page seen so far,
+        within [low, high] seconds. Until we've seen a page change, wait the full `high`.
+        On a quick site this makes the last-page check take seconds instead of half a minute;
+        on a slow PC or site the waits grow to match."""
+        if self.slowest is None:
+            return int(high * 1000)
+        return int(min(high, max(low, factor * self.slowest)) * 1000)
 
     def _settle(self):
         """Wait until the leaderboard is on screen and has stopped changing.
@@ -571,10 +598,13 @@ class BrowserPager:
         log.debug("page %d -> %d via %s", page_no, page_no + 1, found["how"])
         before = self.page.evaluate(TABLE_STATE_JS)
         self.clicked = True
+        clicked_at = time.monotonic()
         self._click_next()
         # Wait until the table changes (new rows, more rows, or replaced while loading).
         # If it doesn't, the repeated-rows check in scrape() asks for a retry.
-        self._wait_for_change(before, 10_000)
+        if self._wait_for_change(before, self._wait_time(4, 4)):
+            took = time.monotonic() - clicked_at
+            self.slowest = max(self.slowest or 0.0, took)
         self._settle()
         return self.page.content()
 
@@ -623,7 +653,7 @@ class BrowserPager:
         """Page `page_no` showed only rows we already have. It may still be loading, or the
         click may not have registered: wait a little longer, then click Next once more."""
         before = self.page.evaluate(TABLE_STATE_JS)
-        if self._wait_for_change(before, 10_000, reloaded=False):
+        if self._wait_for_change(before, self._wait_time(2, 2), reloaded=False):
             log.info("page %d was slow to load; read it again", page_no)
             self._settle()
             return self.page.content()
@@ -632,7 +662,7 @@ class BrowserPager:
             return None
         log.info("page %d didn't change after clicking; clicking %s again", page_no, found["how"])
         self._click_next()
-        if not self._wait_for_change(before, 10_000):
+        if not self._wait_for_change(before, self._wait_time(2, 2)):
             return None
         self._settle()
         return self.page.content()
@@ -675,7 +705,11 @@ def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False
     exp_pages = exp_rows = None
     pages = 0
     reason = ""
+    started = time.monotonic()
+    page_times: list[float] = []  # seconds from reading one page to having the next on screen
     html = pager.open(url)
+    first_page = time.monotonic() - started
+    last_page_done = started + first_page  # when the most recent new page was read
 
     while True:
         page_no = pages + 1
@@ -727,6 +761,7 @@ def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False
         for r in new:
             seen_rows[row_key(r)] = page_no
         pages = page_no
+        last_page_done = time.monotonic()
 
         for rec in new:
             entries.append({
@@ -745,12 +780,22 @@ def scrape(pager, url: str, max_pages: int, delay: float, diagnose: bool = False
             break
         if delay:
             time.sleep(delay)
+        t = time.monotonic()
         html = pager.next(soup, page_no)
+        page_times.append(time.monotonic() - t)
         if html is None:
             reason = pager.stop_reason
             break
 
     log.info("read %d page(s), %d rows; stopped because %s", pages, len(entries), reason or "done")
+    # Where the time went, so a slow run can be explained: the first page, the other pages
+    # (including the pause between pages and reading each one), and the end check (making
+    # sure there's no further page). The three add up to the total.
+    ended = time.monotonic()
+    moves = page_times[:pages - 1]
+    log.info("took %.1f s: first page %.1f s, %d more page(s) %.1f s (slowest %.1f s), end check %.1f s",
+             ended - started, first_page, pages - 1, last_page_done - started - first_page,
+             max(moves, default=0), ended - last_page_done)
     if "repeated rows" in reason or "no next-page control" in reason or "no control matching" in reason:
         pager.log_controls()
     if exp_pages and pages < exp_pages:
@@ -833,19 +878,55 @@ def store(conn: sqlite3.Connection, scraped_at: str, entries: list[dict], pages:
     return snapshot_id
 
 
-def scrape_season(args, conn: sqlite3.Connection, url: str, season: int | None) -> bool:
+class Browsers:
+    """Keeps one browser open between runs, instead of starting a new one every 2 minutes
+    (slow on older PCs). It's replaced after an error and once an hour, to stay healthy."""
+
+    RUNS_PER_BROWSER = 30
+
+    def __init__(self, args):
+        self.args = args
+        self.pager: BrowserPager | None = None
+
+    def get(self) -> BrowserPager:
+        if self.pager is not None and self.pager.runs >= self.RUNS_PER_BROWSER:
+            self.discard()
+        if self.pager is None:
+            a = self.args
+            self.pager = BrowserPager(headed=a.headed, channel=a.browser_channel, next_control=a.next)
+            log.info("browser started in %.1f s", self.pager.launch_seconds)
+        else:
+            self.pager.reset()
+        return self.pager
+
+    def discard(self):
+        if self.pager is not None:
+            try:
+                self.pager.close()
+            except Exception:
+                pass
+            self.pager = None
+
+
+def scrape_season(args, conn: sqlite3.Connection, url: str, season: int | None,
+                  browsers: Browsers | None = None) -> bool:
     """Scrape one season's leaderboard (all pages) and store it as one snapshot."""
     scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     label = f"season {season}: " if season is not None else ""
     pager = None
+    keep = False  # a shared browser stays open after a successful run
     try:
-        pager = (BrowserPager(headed=args.headed, channel=args.browser_channel, next_control=args.next)
-                 if args.browser else HttpPager())
+        if args.browser and browsers is not None:
+            pager = browsers.get()
+        else:
+            pager = (BrowserPager(headed=args.headed, channel=args.browser_channel, next_control=args.next)
+                     if args.browser else HttpPager())
         entries, pages = scrape(pager, url, args.max_pages, args.page_delay, args.diagnose)
         if not entries:
             raise RuntimeError("scrape returned no rows")
         sid = store(conn, scraped_at, entries, pages, season=season)
         log.info("%ssnapshot %d: %d rows from %d page(s)", label, sid, len(entries), pages)
+        keep = browsers is not None and pager is browsers.pager
         return True
     except KeyboardInterrupt:
         # Ctrl+C mid-scrape: the browser connection is already cut, and closing it politely
@@ -857,16 +938,19 @@ def scrape_season(args, conn: sqlite3.Connection, url: str, season: int | None) 
         log.error("%sscrape failed: %s", label, exc)
         return False
     finally:
-        if pager is not None:
-            pager.close()
+        if pager is not None and not keep:
+            if browsers is not None and pager is browsers.pager:
+                browsers.discard()  # after an error, start the next run with a fresh browser
+            else:
+                pager.close()
 
 
-def run_once(args) -> bool:
+def run_once(args, browsers: Browsers | None = None) -> bool:
     """Scrape every season asked for (--season), or the one in --url."""
     seasons = parse_seasons(args.season) if args.season else [season_of(args.url)]
     conn = connect(args.db)
     try:
-        results = [scrape_season(args, conn, with_season(args.url, s) if s is not None else args.url, s)
+        results = [scrape_season(args, conn, with_season(args.url, s) if s is not None else args.url, s, browsers)
                    for s in seasons]
     finally:
         conn.close()
@@ -913,9 +997,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if run_once(args) else 1
         which = f"season {args.season}" if args.season else args.url
         log.info("scraping %s every %ds (Ctrl+C to stop)", which, args.loop)
+        browsers = Browsers(args) if args.browser else None
         while True:
             started = time.monotonic()
-            run_once(args)
+            run_once(args, browsers)
             time.sleep(max(0.0, args.loop - (time.monotonic() - started)))
     except KeyboardInterrupt:
         log.info("stopped")

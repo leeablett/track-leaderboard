@@ -42,7 +42,7 @@ flowchart LR
 2. The scraper opens the hidden browser and loads the leaderboard for the season (season 4).
 3. It reads the table, clicks **>>**, and repeats until the last page. Each player's rank, name, rating, wins, losses and draws are kept.
 4. It saves all the rows as one snapshot with the current time and the season.
-5. It closes the browser and waits for the next run. A run takes about half a minute: a second or two per page, plus a short wait on the last page to be sure there's no next one.
+5. It waits for the next run, keeping the browser open so the next run starts straight away. A run takes about 15 seconds: around a second per page, plus a few seconds on the last page to be sure there's no next one. It logs where the time went, so a slow PC is easy to spot.
 
 **What to be aware of:**
 - **It only collects while the PC is on.** If the PC is off or asleep, those minutes are missed and can't be recovered. For an unbroken record it needs a machine that stays on.
@@ -121,12 +121,19 @@ INFO read 12 page(s), 1150 rows; stopped because Next no longer changes the page
 ```
 
 ```
+INFO took 14.2 s: first page 1.1 s, 11 more page(s) 8.6 s (slowest 0.5 s), end check 4.5 s
+```
+
+```
 INFO season 4: snapshot 1: 1150 rows from 12 page(s)
 ```
 
-Check the page count matches the website (click `>>` until the last page to count). The last
-page takes about 30 seconds: the site's `>>` stays clickable there, so the scraper waits to be
-sure nothing changes.
+Check the page count matches the website (click `>>` until the last page to count).
+
+The `took` line shows where the time went. The **end check** is the scraper making sure the
+last page really is the last: the site's `>>` stays clickable there, so it waits a few times
+longer than the slowest page took, then gives up. On a slow PC every part takes longer, and
+the waits grow to match.
 
 To watch the browser while it works, add `--headed`:
 
@@ -564,6 +571,7 @@ never touched by an update.
 | It clicks the wrong control | Tell it which control goes to the next page: `python scraper.py --once --next ">>"`, and use the same `--next ">>"` in your normal start command and in Task Scheduler's **Add arguments**. With `-v`, each page's log line shows what was clicked. |
 | Player names start with `#1`, or every player appears twice | Data saved by an older version. Update (`git pull`), stop the scraper, delete `data\leaderboard.db` and start again. |
 | `WARNING the site says there are N pages but only M were read` | The scraper saw the site's own page count ("Page 1 of 37" or "1–25 of 912") and read fewer. Run with `--diagnose` as above and send the results. |
+| Runs are slow (e.g. on an older PC) | Look at the `took` line after each run. **first page** is loading the site; **more pages** is clicking `>>` and reading each page; **end check** is a few times the slowest page. When running every 2 minutes the browser stays open between runs, so only the first run includes starting it (`browser started in … s`). Send the `took` lines if it's still too slow. |
 | `WARNING stopped at --max-pages` | The leaderboard has more pages than the safety limit. Add e.g. `--max-pages 5000`. |
 
 ## How the data is stored

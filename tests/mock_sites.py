@@ -3,7 +3,7 @@
 Used by run_pagination_tests.py. Each style has 7 pages of 5 rows (\"many\" has 250 pages)."""
 import http.server, json, urllib.parse, time
 PER = 5
-MODES = {"divpager", "blazor", "blazor_busy", "formpost", "decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
+MODES = {"divpager", "blazor", "blazor_busy", "blazor_big", "formpost", "decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
 def pages_for(mode): return 250 if mode == "many" else 3 if mode in ("veryslow", "lostclick") else 7
 ROW = "r => `<tr><td>${r.rank}</td><td>${r.name}</td><td>${r.score}</td></tr>`"
 TABLE = "rows => '<table><thead><tr><th>Rank</th><th>Player</th><th>Score</th></tr></thead><tbody>' + rows.map(" + ROW + ").join('') + '</tbody></table>'"
@@ -88,6 +88,9 @@ go(1);
 # does when its live connection is blocked), so the network never goes idle.
 BLAZOR_BUSY = BLAZOR.replace("go(1);\n</script>", "go(1);\nsetInterval(() => fetch('/poll'), 200);\n</script>")
 assert BLAZOR_BUSY != BLAZOR
+# Full size, like the real leaderboard: 100 players a page, 12 pages.
+BLAZOR_BIG = BLAZOR.replace("const N = 7;", "const N = 12;").replace("fetch('/api?page=' + n)", "fetch('/api?per=100&page=' + n)")
+assert BLAZOR_BIG.count("per=100") == 1 and "const N = 12;" in BLAZOR_BIG
 
 
 def form_page(p, n=7):
@@ -112,8 +115,8 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
         if u.path == "/api":
-            p = int(q["page"][0])
-            rows = [{"rank": r, "name": f"Player {r}", "score": 10000 - r} for r in range((p-1)*PER+1, p*PER+1)]
+            p, per = int(q["page"][0]), int(q.get("per", [PER])[0])
+            rows = [{"rank": r, "name": f"Player {r}", "score": 10000 - r} for r in range((p-1)*per+1, p*per+1)]
             body, ct = json.dumps({"rows": rows}).encode(), "application/json"
         else:
             mode = u.path.strip("/").split("/")[0]
@@ -123,6 +126,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 self.send_response(404); self.end_headers(); return
             if mode == "blazor":
                 body = BLAZOR.encode()
+            elif mode == "blazor_big":
+                body = BLAZOR_BIG.encode()
             elif mode == "blazor_busy":
                 body = BLAZOR_BUSY.encode()
             elif mode == "formpost":
