@@ -212,6 +212,16 @@ python export.py latest --season 3 -o season3.csv
 
 The scraper collects **season 4** by default. Each snapshot records its season, so seasons never mix.
 
+Seasons are numbered from **-1**, the same as in the site's address (`?season=-1`):
+
+| Season number | Name shown |
+|---|---|
+| `-1` | Beta |
+| `0` | Pre-season |
+| `1`, `2`, `3`, … | Season 1, Season 2, Season 3, … |
+
+The **current season** is always the highest number, so the beta and pre-season are never "current".
+
 Collect a different season (e.g. when season 5 starts):
 
 ```
@@ -228,6 +238,18 @@ Collect past seasons once, to fill in their history (e.g. seasons 1 to 3):
 
 ```
 python scraper.py --once --season 1-3
+```
+
+Collect the beta and pre-season once (you can also write `--season beta` or `--season pre-season`):
+
+```
+python scraper.py --once --season -1,0
+```
+
+Collect everything from the beta to season 3 in one go:
+
+```
+python scraper.py --once --season -1-3
 ```
 
 See which seasons are in the database:
@@ -299,6 +321,12 @@ Final top 10 of a past season (its last snapshot):
 
 ```
 python query.py "SELECT rank, name, score FROM latest WHERE season = 3 LIMIT 10"
+```
+
+The same for the beta (season `-1`):
+
+```
+python query.py "SELECT rank, name, score FROM latest WHERE season = -1 LIMIT 10"
 ```
 
 One player's final rank in every season:
@@ -554,7 +582,7 @@ never touched by an update.
 | `--once` | Scrape once and stop |
 | *(none)* | Scrape every 2 minutes until you press **Ctrl+C** |
 | `--loop 300` | Scrape every 300 seconds instead |
-| `--season 5` | Season(s) to collect: `5`, `4,5` or `1-3` (default: 4, from the address) |
+| `--season 5` | Season(s) to collect: `5`, `4,5`, `1-3`, `-1` (beta), `0` (pre-season) or `-1-3` (default: 4, from the address) |
 | `--no-browser` | Use plain web requests instead of a browser (this site needs the browser, which is the default) |
 | `--headed` | Show the browser window while it works |
 | `--browser-channel msedge` | Which browser to use: `auto` (default), `chromium`, `msedge` or `chrome` |
@@ -602,7 +630,7 @@ season through its snapshot.
 | column | meaning |
 |---|---|
 | `id` | snapshot id |
-| `season` | which season this is (empty for data collected before seasons were recorded) |
+| `season` | which season this is: `-1` beta, `0` pre-season, then `1`, `2`, … (empty for data collected before seasons were recorded) |
 | `scraped_at` | time of the run (UTC) |
 | `pages`, `row_count` | how much was scraped |
 | `status`, `error` | `ok` or `error` (failed runs are recorded too) |

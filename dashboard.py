@@ -94,7 +94,7 @@ def build(conn: sqlite3.Connection, window: str, season: str = "current") -> dic
         elif season == "none":
             chosen = None
         else:
-            chosen = int(season)
+            chosen = int(season)  # may be -1 (beta) or 0 (pre-season)
         sf, sp = " AND season IS ?", (chosen,)  # "IS" also matches NULL (season unknown)
     else:
         seasons, chosen, sf, sp = [], None, "", ()

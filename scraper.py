@@ -843,10 +843,21 @@ def current_season(conn: sqlite3.Connection) -> int | None:
     return row[0] if row else None
 
 
+# Seasons are numbered from -1: -1 was the beta, 0 the pre-season, then 1, 2, 3, ...
+SEASON_NAMES = {-1: "Beta", 0: "Pre-season"}
+
+
+def season_name(season: int | None) -> str:
+    """'Beta', 'Pre-season', 'Season 4', or 'Unknown season' (data saved before seasons)."""
+    if season is None:
+        return "Unknown season"
+    return SEASON_NAMES.get(season, f"Season {season}")
+
+
 def season_of(url: str) -> int | None:
-    """The season in a leaderboard address (…/leaderboard?season=4), if any."""
+    """The season in a leaderboard address (…/leaderboard?season=4, or season=-1), if any."""
     value = parse_qs(urlparse(url).query).get("season", [None])[0]
-    return int(value) if value and value.isdigit() else None
+    return int(value) if value and re.fullmatch(r"-?\d+", value) else None
 
 
 def with_season(url: str, season: int) -> str:
@@ -857,14 +868,23 @@ def with_season(url: str, season: int) -> str:
 
 
 def parse_seasons(text: str) -> list[int]:
-    """'4' -> [4], '3,4' -> [3, 4], '1-4' -> [1, 2, 3, 4]."""
+    """'4' -> [4], '3,4' -> [3, 4], '1-4' -> [1, 2, 3, 4], '-1' -> [-1] (the beta),
+    '-1,0' -> [-1, 0], '-1-4' or '-1..4' -> [-1, 0, 1, 2, 3, 4]. Also accepts the names
+    'beta' and 'pre-season'."""
     seasons: list[int] = []
-    for part in text.replace(" ", "").split(","):
-        if "-" in part:
-            lo, hi = (int(x) for x in part.split("-", 1))
-            seasons.extend(range(lo, hi + 1))
-        elif part:
-            seasons.append(int(part))
+    names = {"beta": -1, "preseason": 0, "pre-season": 0}
+    for part in text.replace(" ", "").lower().split(","):
+        if not part:
+            continue
+        if part in names:
+            seasons.append(names[part])
+            continue
+        m = re.fullmatch(r"(-?\d+)(?:(?:\.\.|-)(-?\d+))?", part)
+        if not m:
+            raise ValueError(f"not a season or range of seasons: {part!r}")
+        lo = int(m.group(1))
+        hi = int(m.group(2)) if m.group(2) is not None else lo
+        seasons.extend(range(lo, hi + 1))
     return sorted(set(seasons))
 
 
@@ -923,7 +943,7 @@ def scrape_season(args, conn: sqlite3.Connection, url: str, season: int | None,
                   browsers: Browsers | None = None) -> bool:
     """Scrape one season's leaderboard (all pages) and store it as one snapshot."""
     scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    label = f"season {season}: " if season is not None else ""
+    label = f"{season_name(season).lower()}: " if season is not None else ""
     pager = None
     keep = False  # a shared browser stays open after a successful run
     try:
@@ -977,6 +997,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--url", default=DEFAULT_URL, help=f"leaderboard address (default: {DEFAULT_URL})")
     p.add_argument("--season", metavar="N",
                    help="season(s) to scrape, e.g. 4, 3,4 or 1-4 (default: the season in --url). "
+                        "-1 is the beta and 0 the pre-season (--season -1, --season beta). "
                         "Each season is saved as its own snapshot")
     p.add_argument("--db", type=Path, default=DEFAULT_DB)
     p.add_argument("--max-pages", type=int, default=1000, help="safety limit on pages per run")
@@ -996,7 +1017,18 @@ def main(argv: list[str] | None = None) -> int:
                    help="save every page (HTML, plus a screenshot with --browser) to data/debug "
                         "and log how each next page was found")
     p.add_argument("-v", "--verbose", action="store_true")
+    # "--season -1,0" would otherwise be read as an unknown option "-1,0" (it starts with "-").
+    argv = list(sys.argv[1:] if argv is None else argv)
+    for i, arg in enumerate(argv[:-1]):
+        if arg == "--season" and re.fullmatch(r"-[\d.,\-]+", argv[i + 1]):
+            argv[i:i + 2] = [f"--season={argv[i + 1]}"]
+            break
     args = p.parse_args(argv)
+    if args.season:
+        try:
+            parse_seasons(args.season)
+        except ValueError as exc:
+            p.error(f"--season: {exc}. Examples: 4, 3,4, 1-3, beta, -1,0, -1-4")
 
     logging.basicConfig(
         level=logging.DEBUG if (args.verbose or args.diagnose) else logging.INFO,
@@ -1006,7 +1038,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.once:
             return 0 if run_once(args) else 1
-        which = f"season {args.season}" if args.season else args.url
+        which = ", ".join(season_name(x) for x in parse_seasons(args.season)) if args.season else args.url
         log.info("scraping %s every %ds (Ctrl+C to stop)", which, args.loop)
         browsers = Browsers(args) if args.browser else None
         while True:

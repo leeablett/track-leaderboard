@@ -39,6 +39,11 @@ def main() -> int:
     check("season set in the address",
           scraper.with_season("https://x/leaderboard?season=4", 2) == "https://x/leaderboard?season=2")
     check("--season lists and ranges", scraper.parse_seasons("1-3, 5") == [1, 2, 3, 5])
+    check("beta (-1) and pre-season (0)", scraper.parse_seasons("-1,0") == [-1, 0]
+          and scraper.parse_seasons("-1-2") == [-1, 0, 1, 2] and scraper.parse_seasons("beta,pre-season") == [-1, 0])
+    check("negative season in the address", scraper.season_of("https://x/leaderboard?season=-1") == -1)
+    check("season names", [scraper.season_name(x) for x in (-1, 0, 4, None)]
+          == ["Beta", "Pre-season", "Season 4", "Unknown season"])
 
     # --- a database made before seasons existed is upgraded, keeping its data
     db = tmp / "old.db"
@@ -104,6 +109,17 @@ def main() -> int:
     conn = sqlite3.connect(db2)
     got = conn.execute("SELECT season, status, row_count FROM snapshots ORDER BY id").fetchall()
     check("--season 3,4 saves one snapshot per season", rc == 0 and got == [(3, "ok", 35), (4, "ok", 35)], str(got))
+    rc = scraper.main(["--once", "--no-browser", "--page-delay", "0", "--url", url, "--season", "-1,0", "--db", str(db2)])
+    got = conn.execute("SELECT season, status, row_count FROM snapshots WHERE season < 1 ORDER BY id").fetchall()
+    check("--season -1,0 saves the beta and pre-season", rc == 0 and got == [(-1, "ok", 35), (0, "ok", 35)], str(got))
+    conn.close()
+    ro = sqlite3.connect(db2)
+    d = dashboard.build(ro, "all", "current")
+    check("beta/pre-season don't become current", d["season"] == 4)
+    check("dashboard lists them, newest first", [x["season"] for x in d["seasons"]] == [4, 3, 0, -1], str(d["seasons"]))
+    beta = dashboard.build(ro, "all", "-1")
+    check("dashboard: pick the beta", beta["season"] == -1 and beta["kpi"]["players"] == 35 and not beta["is_current"])
+    ro.close()
     server.shutdown()
 
     print("All passed." if not failures else f"{failures} failed.")

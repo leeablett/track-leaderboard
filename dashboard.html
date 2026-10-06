@@ -242,7 +242,7 @@ function kpis(d) {
     tile("Last update", ago(k.last_ok),
       h("span", { class: "status " + st[0], title: k.last_run.error || "" }, h("i", { "aria-hidden": "true" }, st[1]), st[2])),
     d.is_current === false
-      ? tile("Season " + d.season, "Finished", "or not tracked right now")
+      ? tile(seasonName(d.season), "Finished", "or not tracked right now")
       : tile("Runs in the last 24 hours", num(k.ok_24h) + " / " + num(k.runs_24h),
           pct == null ? "no runs" : num(pct, 1) + "% successful"),
     tile("History collected", num(k.snapshots), "snapshots since " + when(k.since)));
@@ -410,14 +410,16 @@ function churn(d) {
 }
 
 // ---------- page
-const seasonName = s => s === null || s === undefined ? "Unknown" : "Season " + s;
+// Seasons are numbered from -1: -1 was the beta, 0 the pre-season.
+const seasonName = s => s === null || s === undefined ? "Unknown season"
+  : s === -1 ? "Beta" : s === 0 ? "Pre-season" : "Season " + s;
 function fillSeasons(d) {
   const sel = document.getElementById("season");
   const list = d.seasons || [];
   sel.parentElement.style.display = "";
   sel.style.display = list.length ? "" : "none";
   document.querySelector('label[for="season"]').style.display = list.length ? "" : "none";
-  const opts = [h("option", { value: "current" }, "Current" + (d.season != null && state.season === "current" ? ` (season ${d.season})` : ""))];
+  const opts = [h("option", { value: "current" }, "Current" + (d.season != null && state.season === "current" ? ` (${seasonName(d.season)})` : ""))];
   for (const x of list) opts.push(h("option", { value: x.season === null ? "none" : String(x.season) }, seasonName(x.season)));
   sel.replaceChildren(...opts);
   sel.value = state.season;
@@ -433,7 +435,7 @@ function render() {
       h("h2", {}, (d.seasons || []).length && state.season !== "current"
         ? `No data for ${seasonName(d.season)} yet` : "No leaderboard data yet"),
       (d.seasons || []).length && state.season !== "current"
-        ? h("p", {}, "Pick another season above, or scrape this one: ", h("code", {}, `python scraper.py --once --season ${d.season}`))
+        ? h("p", {}, "Pick another season above, or scrape this one: ", h("code", {}, `python scraper.py --once --season=${d.season}`))
         : h("p", {}, "Run the scraper at least once: ", h("code", {}, "python scraper.py --once")),
       lr && lr.status === "error" ? h("p", {}, "The last run failed: ", lr.error) : null,
       h("p", {}, "This page checks again every 2 minutes.")));
