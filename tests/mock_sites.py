@@ -3,7 +3,7 @@
 Used by run_pagination_tests.py. Each style has 7 pages of 5 rows (\"many\" has 250 pages)."""
 import http.server, json, urllib.parse, time
 PER = 5
-MODES = {"divpager", "blazor", "blazor_busy", "blazor_big", "formpost", "decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
+MODES = {"app", "remember", "divpager", "blazor", "blazor_busy", "blazor_big", "formpost", "decoy", "iconnext", "veryslow", "lostclick", "next_text", "numbers", "mui", "slow", "slow_keep", "loadmore", "many", "bootstrap", "ssr_next_text"}
 def pages_for(mode): return 250 if mode == "many" else 3 if mode in ("veryslow", "lostclick") else 7
 ROW = "r => `<tr><td>${r.rank}</td><td>${r.name}</td><td>${r.score}</td></tr>`"
 TABLE = "rows => '<table><thead><tr><th>Rank</th><th>Player</th><th>Score</th></tr></thead><tbody>' + rows.map(" + ROW + ").join('') + '</tbody></table>'"
@@ -93,6 +93,20 @@ BLAZOR_BIG = BLAZOR.replace("const N = 7;", "const N = 12;").replace("fetch('/ap
 assert BLAZOR_BIG.count("per=100") == 1 and "const N = 12;" in BLAZOR_BIG
 
 
+# Like the real site, but the page first loads a big, cacheable code file (as a Blazor
+# WebAssembly app does), which a saved browser profile shouldn't download again.
+FRAMEWORK = ("window.FRAMEWORK_LOADED = true;\n/*" + "x" * 2_000_000 + "*/\n").encode()
+FRAMEWORK_DOWNLOADS = []  # one entry per download, so tests can count them
+BLAZOR_APP = BLAZOR.replace("<script>\n// Copied", '<script src="/framework.js"></script>\n<script>\n// Copied')
+assert BLAZOR_APP != BLAZOR
+# Like the real site, but it remembers the page you were on (in the browser's local storage)
+# and reopens there. A scraper reusing a profile must still start from page 1.
+BLAZOR_REMEMBER = (BLAZOR.replace("let p = 1; const N = 7;", "let p = 1; const N = 7;")
+                   .replace("p = n;\n", "p = n; localStorage.setItem('lbPage', n);\n")
+                   .replace("go(1);\n</script>", "go(+localStorage.getItem('lbPage') || 1);\n</script>"))
+assert BLAZOR_REMEMBER.count("lbPage") == 2
+
+
 def form_page(p, n=7):
     """Like the real site: "<<  Page N  >>" form buttons above the table; each click POSTs the
     form and reloads the page. Addresses are only partly honoured: ?page=2 works, ?page=3+ shows page 1."""
@@ -122,10 +136,22 @@ class H(http.server.BaseHTTPRequestHandler):
             mode = u.path.strip("/").split("/")[0]
             if mode == "poll":
                 self.send_response(200); self.end_headers(); return
+            if u.path == "/framework.js":
+                FRAMEWORK_DOWNLOADS.append(1)
+                time.sleep(1.0)  # a slow connection
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("Content-Length", str(len(FRAMEWORK)))
+                self.end_headers(); self.wfile.write(FRAMEWORK); return
             if mode not in MODES:
                 self.send_response(404); self.end_headers(); return
             if mode == "blazor":
                 body = BLAZOR.encode()
+            elif mode == "app":
+                body = BLAZOR_APP.encode()
+            elif mode == "remember":
+                body = BLAZOR_REMEMBER.encode()
             elif mode == "blazor_big":
                 body = BLAZOR_BIG.encode()
             elif mode == "blazor_busy":

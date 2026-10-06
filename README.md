@@ -42,7 +42,7 @@ flowchart LR
 2. The scraper opens the hidden browser and loads the leaderboard for the season (season 4).
 3. It reads the table, clicks **>>**, and repeats until the last page. Each player's rank, name, rating, wins, losses and draws are kept.
 4. It saves all the rows as one snapshot with the current time and the season.
-5. It waits for the next run, keeping the browser open so the next run starts straight away. A run takes about 15 seconds: around a second per page, plus a few seconds on the last page to be sure there's no next one. It logs where the time went, so a slow PC is easy to spot.
+5. It waits for the next run, keeping the browser open so the next run starts straight away. The browser also keeps a cache of the site's code on disk, so even a freshly started browser doesn't have to download it again. A run takes about 15 seconds: around a second per page, plus a few seconds on the last page to be sure there's no next one. It logs where the time went, so a slow PC is easy to spot.
 
 **What to be aware of:**
 - **It only collects while the PC is on.** If the PC is off or asleep, those minutes are missed and can't be recovered. For an unbroken record it needs a machine that stays on.
@@ -530,6 +530,12 @@ Season support (database upgrade, several seasons, views, exports, dashboard) ha
 python tests/run_season_tests.py
 ```
 
+The saved browser profile (cache kept, every run still starts from page 1, profile in use) has its own check too:
+
+```
+python tests/run_profile_tests.py
+```
+
 ✅ You should see `PASS` on every line and `All passed.` at the end of each.
 
 ## Updating the scraper
@@ -585,6 +591,7 @@ never touched by an update.
 | `--season 5` | Season(s) to collect: `5`, `4,5`, `1-3`, `-1` (beta), `0` (pre-season) or `-1-3` (default: 4, from the address) |
 | `--no-browser` | Use plain web requests instead of a browser (this site needs the browser, which is the default) |
 | `--headed` | Show the browser window while it works |
+| `--no-profile` | Don't keep a saved browser profile (`data\browser-profile`); each new browser then downloads the site's code again |
 | `--browser-channel msedge` | Which browser to use: `auto` (default), `chromium`, `msedge` or `chrome` |
 | `--page-delay 0.5` | Seconds to wait between pages |
 | `--max-pages 1000` | Safety limit on pages per run (a warning is logged if it's reached) |
@@ -614,6 +621,7 @@ never touched by an update.
 | It clicks the wrong control | Tell it which control goes to the next page: `python scraper.py --once --next ">>"`, and use the same `--next ">>"` in your normal start command and in Task Scheduler's **Add arguments**. With `-v`, each page's log line shows what was clicked. |
 | Player names start with `#1`, or every player appears twice | Data saved by an older version. Update (`git pull`), stop the scraper, delete `data\leaderboard.db` and start again. |
 | `WARNING the site says there are N pages but only M were read` | The scraper saw the site's own page count ("Page 1 of 37" or "1–25 of 912") and read fewer. Run with `--diagnose` as above and send the results. |
+| `couldn't use the saved browser profile …; using a fresh one` | Another scraper is already running (only one can use the profile at a time), or the profile is damaged. That run still works, just without the cache. If it keeps happening with only one scraper running, stop it and delete the `data\browser-profile` folder; it's recreated automatically. |
 | Runs are slow (e.g. on an older PC) | Look at the `took` line after each run. **first page** is loading the site; **more pages** is clicking `>>` and reading each page; **end check** is a few times the slowest page. When running every 2 minutes the browser stays open between runs, so only the first run includes starting it (`browser started in … s`). Send the `took` lines if it's still too slow. |
 | `WARNING stopped at --max-pages` | The leaderboard has more pages than the safety limit. Add e.g. `--max-pages 5000`. |
 
@@ -655,6 +663,12 @@ season through its snapshot.
 
 Databases from older versions are upgraded automatically the next time the scraper runs:
 a `season` column is added and existing data is kept (with the season left empty).
+
+**Saved browser profile** (`data\browser-profile`): the browser's download cache, kept between
+runs so the site's code isn't downloaded again every time a browser starts (helpful on slow PCs
+and connections; idea from JT). Cookies and anything the site stores are cleared at the start of
+every run, so each run starts from page 1 like a first visit. It's safe to delete the folder at
+any time (stop the scraper first); `--no-profile` turns it off.
 
 At one run every 2 minutes, the database grows by about 720 snapshots a day for each season
 collected (tens of MB). To start again from nothing, stop the scraper and delete

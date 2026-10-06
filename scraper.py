@@ -28,6 +28,9 @@ from bs4 import BeautifulSoup
 DEFAULT_URL = "https://vfm.bdynamicsstudio.com/leaderboard?season=4"
 DEFAULT_DB = Path(__file__).parent / "data" / "leaderboard.db"
 DEBUG_DIR = Path(__file__).parent / "data" / "debug"
+# Saved browser profile: keeps the browser's download cache between runs, so the site's code
+# isn't downloaded again every time a browser starts (idea from JT). One folder per browser.
+DEFAULT_PROFILE = Path(__file__).parent / "data" / "browser-profile"
 
 # Header names used to pick out the common fields. Every column is also kept in `data`.
 RANK_KEYS = ("rank", "position", "pos", "place", "#", "no")
@@ -469,10 +472,6 @@ TABLE_STATE_JS = """() => {
 }"""
 
 
-# Addresses of downloads the scraper never needs (images, fonts, video).
-SKIP_DOWNLOADS = re.compile(r"\.(png|jpe?g|gif|webp|avif|svg|ico|bmp|woff2?|ttf|otf|eot|mp4|webm|mp3|wav)(\?|#|$)", re.I)
-
-
 # Resolves once the table has looked the same for 300 ms (checked every 50 ms), or after 3 s.
 TABLE_STABLE_JS = f"""async () => {{
   const state = {TABLE_STATE_JS.strip()};
@@ -496,19 +495,46 @@ class BrowserPager:
     # browsers already on the PC (Edge is on every Windows 10/11 machine).
     CHANNELS = ("chromium", "msedge", "chrome")
 
-    def __init__(self, headed: bool = False, channel: str = "auto", next_control: str | None = None):
+    def __init__(self, headed: bool = False, channel: str = "auto", next_control: str | None = None,
+                 profile: Path | None = None):
+        """`profile`: folder for a saved browser profile (see DEFAULT_PROFILE), or None for a
+        throwaway one. Only the download cache is reused: cookies and the site's stored data
+        are cleared at the start of every run, so each run starts from page 1 like a new visit."""
         from playwright.sync_api import sync_playwright
 
         self.next_control = next_control  # --next: label or CSS selector of the next-page control
 
         started = time.monotonic()
         self._pw = sync_playwright().start()
+        self.browser = None  # set when not using a saved profile
+        self.profile_dir: Path | None = None
         tried = []
+        # Don't load images: they aren't needed to read the table, and skipping them saves work
+        # on older PCs. (A browser setting rather than intercepting requests: intercepting would
+        # switch off the browser's download cache, which matters more.)
+        launch_args = ["--blink-settings=imagesEnabled=false"]
+        options = {"headless": not headed, "viewport": {"width": 1366, "height": 900}, "args": launch_args}
         for ch in (self.CHANNELS if channel == "auto" else (channel,)):
+            kw = {} if ch == "chromium" else {"channel": ch}
             try:
-                kw = {} if ch == "chromium" else {"channel": ch}
-                self.browser = self._pw.chromium.launch(headless=not headed, **kw)
-                log.debug("using browser: %s", ch)
+                self.context = None
+                if profile is not None:
+                    folder = profile / ch  # profiles from different browsers don't mix
+                    try:
+                        folder.mkdir(parents=True, exist_ok=True)
+                        self.context = self._pw.chromium.launch_persistent_context(str(folder), **options, **kw)
+                        self.profile_dir = folder
+                    except Exception as exc:
+                        if missing_browser(exc):
+                            raise
+                        # Most likely the profile is in use (another scraper is running) or
+                        # damaged: carry on without it rather than fail the run.
+                        log.warning("couldn't use the saved browser profile (%s); using a fresh one",
+                                    str(exc).strip().splitlines()[0])
+                if self.context is None:
+                    self.browser = self._pw.chromium.launch(headless=not headed, args=launch_args, **kw)
+                    self.context = self.browser.new_context(viewport=options["viewport"])
+                log.debug("using browser: %s%s", ch, f" with profile {self.profile_dir}" if self.profile_dir else "")
                 break
             except Exception as exc:
                 tried.append(f"{ch}: {str(exc).strip().splitlines()[0]}")
@@ -518,10 +544,7 @@ class BrowserPager:
                 "couldn't start a browser. Install Microsoft Edge or Google Chrome, or run "
                 "'python -m playwright install chromium'. Tried -> " + " | ".join(tried)
             )
-        self.page = self.browser.new_page(viewport={"width": 1366, "height": 900})
-        # Images, fonts and video aren't needed to read the table; skipping them saves work,
-        # which matters on older PCs. (Only matching addresses are intercepted.)
-        self.page.route(SKIP_DOWNLOADS, lambda route: route.abort())
+        self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.launch_seconds = time.monotonic() - started
         # How long the slowest page took to appear after clicking Next, learned as we go and
         # kept between runs. Waits for "has the page changed?" scale with it (see _wait_time).
@@ -535,7 +558,28 @@ class BrowserPager:
         self.visited: set[str] = set()
         self.clicked = False  # paging by clicking; no control found afterwards means the end
         self.stop_reason = ""
+        self.forget_site = True  # clear cookies and the site's stored data before the next visit
+        if self.runs:
+            # A fresh tab, so nothing from the last run (e.g. "which page was I on") carries over.
+            old, self.page = self.page, self.context.new_page()
+            old.close()
         self.runs += 1
+
+    def _forget_site(self, url: str) -> None:
+        """Clear cookies and everything the site stored (local storage, databases, service
+        workers), but keep the download cache: that's the part that saves time."""
+        self.forget_site = False
+        self.context.clear_cookies()
+        parts = urlparse(url)
+        try:
+            cdp = self.context.new_cdp_session(self.page)
+            cdp.send("Storage.clearDataForOrigin", {
+                "origin": f"{parts.scheme}://{parts.netloc}",
+                "storageTypes": "local_storage,indexeddb,websql,service_workers,file_systems",
+            })
+            cdp.detach()
+        except Exception as exc:  # not fatal: the tab is new, so most state is gone anyway
+            log.debug("couldn't clear the site's stored data: %s", exc)
 
     def _wait_time(self, factor: float, low: float, high: float = 10.0) -> int:
         """Milliseconds to wait for a page change: a few times the slowest page seen so far,
@@ -566,6 +610,8 @@ class BrowserPager:
 
     def open(self, url: str) -> str:
         self.visited.add(url)
+        if self.forget_site:
+            self._forget_site(url)
         resp = self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         self.status = resp.status if resp else None
         self._settle()
@@ -681,8 +727,17 @@ class BrowserPager:
         self.page.screenshot(path=str(path), full_page=True)
 
     def close(self):
-        self.browser.close()
+        # Closing the context also closes the browser when a saved profile is used.
+        self.context.close()
+        if self.browser is not None:
+            self.browser.close()
         self._pw.stop()
+
+
+def missing_browser(exc: Exception) -> bool:
+    """True if the error means this browser isn't installed (so try the next one)."""
+    text = str(exc)
+    return "Executable doesn't exist" in text or "is not found at" in text or "not installed" in text
 
 
 def row_key(rec: dict) -> str:
@@ -924,7 +979,8 @@ class Browsers:
             self.discard()
         if self.pager is None:
             a = self.args
-            self.pager = BrowserPager(headed=a.headed, channel=a.browser_channel, next_control=a.next)
+            self.pager = BrowserPager(headed=a.headed, channel=a.browser_channel, next_control=a.next,
+                                      profile=None if a.no_profile else DEFAULT_PROFILE)
             log.info("browser started in %.1f s", self.pager.launch_seconds)
         else:
             self.pager.reset()
@@ -950,7 +1006,8 @@ def scrape_season(args, conn: sqlite3.Connection, url: str, season: int | None,
         if args.browser and browsers is not None:
             pager = browsers.get()
         else:
-            pager = (BrowserPager(headed=args.headed, channel=args.browser_channel, next_control=args.next)
+            pager = (BrowserPager(headed=args.headed, channel=args.browser_channel, next_control=args.next,
+                                  profile=None if args.no_profile else DEFAULT_PROFILE)
                      if args.browser else HttpPager())
         entries, pages = scrape(pager, url, args.max_pages, args.page_delay, args.diagnose, label)
         if not entries:
@@ -1007,6 +1064,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-browser", dest="browser", action="store_false",
                    help="use plain HTTP requests instead of a browser")
     p.add_argument("--headed", action="store_true", help="with --browser: show the browser window")
+    p.add_argument("--no-profile", action="store_true",
+                   help="don't keep a saved browser profile (data/browser-profile); every new browser "
+                        "then downloads the site's code again")
     p.add_argument("--browser-channel", default="auto", choices=["auto", *BrowserPager.CHANNELS],
                    help="with --browser: which browser to use (default: Playwright's Chromium if "
                         "installed, otherwise Microsoft Edge, otherwise Google Chrome)")
